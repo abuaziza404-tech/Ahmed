@@ -1,4 +1,4 @@
-name: Build AbuAziza AI APK From Uploaded ZIP
+name: Build Android APK From Any Uploaded ZIP
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - main
       - master
     paths:
-      - "AbuAziza_AI_Source_UPLOAD_THIS_ZIP.zip"
+      - "*.zip"
       - ".github/workflows/build-uploaded-zip-apk.yml"
 
 permissions:
@@ -22,13 +22,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify uploaded ZIP exists
+      - name: Find uploaded ZIP
         run: |
-          if [ ! -f "AbuAziza_AI_Source_UPLOAD_THIS_ZIP.zip" ]; then
-            echo "ERROR: AbuAziza_AI_Source_UPLOAD_THIS_ZIP.zip not found in repository root."
-            echo "Please upload the ZIP file to the root of your GitHub repository."
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository root."
+            echo "Upload your Android project ZIP file to the root of the repository."
             exit 1
           fi
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "Found ZIP: $ZIP_FILE"
 
       - name: Install unzip
         run: |
@@ -39,19 +44,18 @@ jobs:
         run: |
           rm -rf source
           mkdir source
-          unzip -q AbuAziza_AI_Source_UPLOAD_THIS_ZIP.zip -d source
+          unzip -q "$ZIP_FILE" -d source
           echo "Extracted files:"
-          find source -maxdepth 3 -type f | head -80
+          find source -maxdepth 3 -type f | head -100
 
       - name: Detect Android project root
-        id: detect
         run: |
           PROJECT_DIR=""
 
           if [ -f "source/settings.gradle.kts" ] || [ -f "source/settings.gradle" ]; then
             PROJECT_DIR="source"
           else
-            FOUND=$(find source -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -1)
+            FOUND=$(find source -maxdepth 5 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -1)
             if [ -n "$FOUND" ]; then
               PROJECT_DIR=$(dirname "$FOUND")
             fi
@@ -59,6 +63,7 @@ jobs:
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: Could not find settings.gradle or settings.gradle.kts inside ZIP."
+            echo "Make sure the ZIP contains a valid Android Gradle project."
             exit 1
           fi
 
@@ -92,17 +97,16 @@ jobs:
             gradle --no-daemon clean assembleDebug
           fi
 
-      - name: Find APK files
+      - name: Collect APK files
         run: |
-          cd "$PROJECT_DIR"
           mkdir -p "$GITHUB_WORKSPACE/apk-output"
-          find . -type f -name "*.apk" -print -exec cp {} "$GITHUB_WORKSPACE/apk-output/" \;
-          echo "APK output:"
+          find "$PROJECT_DIR" -type f -name "*.apk" -print -exec cp {} "$GITHUB_WORKSPACE/apk-output/" \;
+          echo "APK files:"
           ls -lah "$GITHUB_WORKSPACE/apk-output"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AbuAzizaAI-ZipUpload-debug-apk
+          name: AbuAzizaAI-debug-apk
           path: apk-output/*.apk
           if-no-files-found: error
