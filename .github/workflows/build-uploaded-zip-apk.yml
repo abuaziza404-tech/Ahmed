@@ -1,4 +1,4 @@
-name: Build Android APK From Any Uploaded ZIP
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -28,7 +28,6 @@ jobs:
 
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: No ZIP file found in repository root."
-            echo "Upload your Android project ZIP file to the root of the repository."
             exit 1
           fi
 
@@ -40,30 +39,44 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y unzip
 
-      - name: Extract source ZIP
+      - name: Extract ZIP recursively
         run: |
           rm -rf source
           mkdir source
+
+          echo "Extracting main ZIP..."
           unzip -q "$ZIP_FILE" -d source
+
+          echo "Checking for nested project ZIP..."
+          NESTED_ZIP=$(find source -type f -name "*.zip" | head -1)
+
+          if [ -n "$NESTED_ZIP" ]; then
+            echo "Nested ZIP found: $NESTED_ZIP"
+            rm -rf source_nested
+            mkdir source_nested
+            unzip -q "$NESTED_ZIP" -d source_nested
+            rm -rf source
+            mv source_nested source
+          fi
+
           echo "Extracted files:"
-          find source -maxdepth 3 -type f | head -100
+          find source -maxdepth 5 -type f | head -150
 
       - name: Detect Android project root
         run: |
           PROJECT_DIR=""
 
-          if [ -f "source/settings.gradle.kts" ] || [ -f "source/settings.gradle" ]; then
-            PROJECT_DIR="source"
-          else
-            FOUND=$(find source -maxdepth 5 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -1)
-            if [ -n "$FOUND" ]; then
-              PROJECT_DIR=$(dirname "$FOUND")
-            fi
+          FOUND=$(find source -maxdepth 8 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -1)
+
+          if [ -n "$FOUND" ]; then
+            PROJECT_DIR=$(dirname "$FOUND")
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: Could not find settings.gradle or settings.gradle.kts inside ZIP."
-            echo "Make sure the ZIP contains a valid Android Gradle project."
+            echo "The ZIP does not contain an Android Gradle project."
+            echo "Files found:"
+            find source -maxdepth 4 -type f | head -100
             exit 1
           fi
 
@@ -101,7 +114,6 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/apk-output"
           find "$PROJECT_DIR" -type f -name "*.apk" -print -exec cp {} "$GITHUB_WORKSPACE/apk-output/" \;
-          echo "APK files:"
           ls -lah "$GITHUB_WORKSPACE/apk-output"
 
       - name: Upload APK artifact
