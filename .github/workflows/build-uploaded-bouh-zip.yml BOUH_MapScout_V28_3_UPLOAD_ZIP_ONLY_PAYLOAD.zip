@@ -1,0 +1,178 @@
+name: Build BOUH MapScout from Uploaded ZIP Payload
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload_zip:
+        description: "ZIP payload filename in repository root"
+        required: false
+        default: "BOUH_MapScout_V28_3_UPLOAD_ZIP_ONLY_PAYLOAD.zip"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "BOUH_MapScout_V28_3_UPLOAD_ZIP_ONLY_PAYLOAD.zip"
+      - ".github/workflows/build-uploaded-bouh-zip.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bouh-mapscout-uploaded-zip-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-from-zip:
+    name: Unpack uploaded ZIP, validate data, build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      DEFAULT_ZIP: BOUH_MapScout_V28_3_UPLOAD_ZIP_ONLY_PAYLOAD.zip
+      PROJECT_DIR: _bouh_project
+      APK_NAME: BOUH_MapScout_V28_3_GOLD_SUPPORT_RADAR.apk
+      OUTPUT_DIR: final-apk
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve payload ZIP
+        id: payload
+        shell: bash
+        run: |
+          ZIP_NAME="${{ github.event.inputs.payload_zip }}"
+          if [ -z "$ZIP_NAME" ]; then
+            ZIP_NAME="$DEFAULT_ZIP"
+          fi
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          test -f "$ZIP_NAME"
+          test -s "$ZIP_NAME"
+          echo "Using ZIP payload: $ZIP_NAME"
+          ls -lh "$ZIP_NAME"
+
+      - name: Safe unzip payload
+        shell: bash
+        run: |
+          ZIP_NAME="${{ steps.payload.outputs.zip_name }}"
+          rm -rf _unzipped "$PROJECT_DIR"
+          mkdir -p _unzipped
+
+          python3 - <<'PY'
+          import os, sys, zipfile, pathlib
+          zip_name = os.environ.get("ZIP_NAME")
+          if not zip_name:
+              zip_name = "${{ steps.payload.outputs.zip_name }}"
+          target = pathlib.Path("_unzipped").resolve()
+          with zipfile.ZipFile(zip_name) as z:
+              for info in z.infolist():
+                  name = info.filename
+                  if name.startswith("/") or name.startswith("\\"):
+                      raise SystemExit(f"Unsafe absolute path in ZIP: {name}")
+                  dest = (target / name).resolve()
+                  if not str(dest).startswith(str(target) + os.sep) and dest != target:
+                      raise SystemExit(f"Unsafe path traversal in ZIP: {name}")
+              z.extractall(target)
+          print("ZIP extracted safely")
+          PY
+
+          echo "Extracted tree:"
+          find _unzipped -maxdepth 4 -type f | sort | sed 's#^#  #'
+
+      - name: Locate Android project root
+        shell: bash
+        run: |
+          ROOT="$(find _unzipped -type f -name settings.gradle -printf '%h\n' | head -n 1)"
+          if [ -z "$ROOT" ]; then
+            echo "::error::Could not find settings.gradle inside uploaded ZIP."
+            exit 1
+          fi
+          cp -a "$ROOT" "$PROJECT_DIR"
+          echo "Project root: $ROOT"
+          find "$PROJECT_DIR" -maxdepth 4 -type f | sort
+
+      - name: Validate Android source layout
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          test -f settings.gradle
+          test -f build.gradle
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/bouh/mapscout/MainActivity.java
+          test -f app/src/main/java/com/bouh/mapscout/TerrainCell.java
+          test -f app/src/main/java/com/bouh/mapscout/GoldIndicatorModel.java
+          test -f app/src/main/java/com/bouh/mapscout/TerrainTruthEngine.java
+          test -f app/src/main/java/com/bouh/mapscout/RadarCircleView.java
+          test -f app/src/main/assets/BOUH_ASTER_VNIR_candidate_points.csv
+          test -f app/src/main/assets/bouh_truth_grid_v28.csv
+          if grep -q '<application[^>]*android:exported=' app/src/main/AndroidManifest.xml; then
+            echo "::error::android:exported must be on launcher activities/services/receivers, not on the application element."
+            exit 1
+          fi
+          grep -q 'android:exported="true"' app/src/main/AndroidManifest.xml
+
+      - name: Validate terrain CSV and scoring model
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          python3 tools/validate_gold_radar_dataset.py . --write-report qa_gold_support_report.json
+          python3 tools/generate_gold_support_preview.py . qa_gold_support_preview.csv
+          test -s qa_gold_support_report.json
+          test -s qa_gold_support_preview.csv
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform packages
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build debug APK with stacktrace
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          gradle --no-daemon clean lintDebug assembleDebug --stacktrace
+
+      - name: Collect APK and QA outputs
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          rm -rf "../$OUTPUT_DIR"
+          mkdir -p "../$OUTPUT_DIR"
+          cp app/build/outputs/apk/debug/app-debug.apk "../$OUTPUT_DIR/$APK_NAME"
+          cp qa_gold_support_report.json "../$OUTPUT_DIR/qa_gold_support_report.json"
+          cp qa_gold_support_preview.csv "../$OUTPUT_DIR/qa_gold_support_preview.csv"
+          if [ -f TESTING_V28_2.md ]; then
+            cp TESTING_V28_2.md "../$OUTPUT_DIR/TESTING_V28_2.md"
+          fi
+          {
+            echo "BOUH MapScout V28.3 Gold Support Radar"
+            echo "Payload: ${{ steps.payload.outputs.zip_name }}"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_RUN_ID"
+            echo "Built: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "APK: $APK_NAME"
+            echo "Mode: uploaded zip payload, project unpacked inside GitHub runner"
+          } > "../$OUTPUT_DIR/BUILD_INFO.txt"
+          ls -lh "../$OUTPUT_DIR"
+
+      - name: Upload APK and QA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BOUH_MapScout_V28_3_GOLD_SUPPORT_RADAR_APK_AND_QA
+          path: final-apk/
+          if-no-files-found: error
