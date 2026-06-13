@@ -1,4 +1,4 @@
-name: Build BOUH-ZVT V57.1 Kotlin Fixed Payload
+name: Build BOUH-ZVT V58 Pro GeoRadar Payload
 
 on:
   push:
@@ -10,22 +10,22 @@ permissions:
 
 jobs:
   build-android:
-    name: Unzip V57.1 payload and build APK/AAB
+    name: Unzip V58 payload and build APK/AAB
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 80
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate V57.1 payload zip
+      - name: Locate V58 payload zip
         id: payload
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -name 'BOUH_ZVT_V57_1_HYBRID_COMMANDER_KOTLIN_FIXED_PAYLOAD_NO_UNZIP.zip' | head -n 1)"
+          ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -name 'BOUH_ZVT_V58_PRO_GEORADAR_COMMANDER_PAYLOAD_NO_UNZIP.zip' | head -n 1)"
           if [ -z "$ZIP" ]; then
-            echo "V57.1 payload zip not found"
+            echo "V58 payload zip not found"
             find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | sort
             exit 1
           fi
@@ -108,20 +108,20 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: BOUH-ZVT-V57-1-debug-apk
+          name: BOUH-ZVT-V58-debug-apk
           path: ${{ env.BOUH_SRC }}/build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: BOUH-ZVT-V57-1-release-apk
+          name: BOUH-ZVT-V58-release-apk
           path: ${{ env.BOUH_SRC }}/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
       - name: Upload release AAB
         uses: actions/upload-artifact@v4
         with:
-          name: BOUH-ZVT-V57-1-release-aab
+          name: BOUH-ZVT-V58-release-aab
           path: ${{ env.BOUH_SRC }}/build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
