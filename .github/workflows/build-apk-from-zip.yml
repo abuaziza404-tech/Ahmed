@@ -1,0 +1,79 @@
+name: Build BOUH Terrain Radar APK from ZIP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Extract source ZIP and build APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android platform packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Locate and extract BOUH source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_FILE="BOUH_TERRAIN_RADAR_ANDROID_GITHUB_ACTIONS_READY.zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: $ZIP_FILE not found in repository root. Upload this ZIP beside the workflow file." >&2
+            find . -maxdepth 2 -type f -name '*.zip' -print >&2
+            exit 1
+          fi
+          rm -rf _bouh_build
+          mkdir -p _bouh_build
+          unzip -q "$ZIP_FILE" -d _bouh_build
+          if [ -d _bouh_build/BOUH_ANDROID_GITHUB_READY ]; then
+            echo "PROJECT_DIR=_bouh_build/BOUH_ANDROID_GITHUB_READY" >> "$GITHUB_ENV"
+          elif [ -f _bouh_build/settings.gradle ]; then
+            echo "PROJECT_DIR=_bouh_build" >> "$GITHUB_ENV"
+          else
+            echo "ERROR: Could not find Gradle Android project after extraction." >&2
+            find _bouh_build -maxdepth 3 -type f | head -80 >&2
+            exit 1
+          fi
+
+      - name: Validate project files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$PROJECT_DIR/settings.gradle"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/app/build.gradle"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
+          grep -q "com.android.application" "$PROJECT_DIR/build.gradle"
+          grep -q "MainActivity" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BOUH-TERRAIN-RADAR-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
