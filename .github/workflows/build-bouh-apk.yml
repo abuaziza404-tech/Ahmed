@@ -1,0 +1,128 @@
+name: Build BOUH Terrain Radar APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build BOUH APK from fixed source ZIP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Locate and extract fixed BOUH source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="BOUH_TERRAIN_RADAR_ANDROID_GITHUB_ACTIONS_READY.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Fixed source ZIP not found in repository root." >&2
+            echo "Required file name:" >&2
+            echo "$ZIP_FILE" >&2
+            echo "Upload the latest BOUH ZIP using this exact fixed name." >&2
+            find . -maxdepth 2 -type f -name '*.zip' -print >&2 || true
+            exit 1
+          fi
+
+          rm -rf _bouh_build
+          mkdir -p _bouh_build
+          unzip -q "$ZIP_FILE" -d _bouh_build
+
+          PROJECT_DIR_CANDIDATE="$(find _bouh_build -maxdepth 3 -type f -name settings.gradle -printf '%h\n' | head -1 || true)"
+
+          if [ -z "$PROJECT_DIR_CANDIDATE" ]; then
+            echo "ERROR: Could not find settings.gradle after extracting ZIP." >&2
+            find _bouh_build -maxdepth 4 -type f | head -150 >&2
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR_CANDIDATE" >> "$GITHUB_ENV"
+          echo "Detected project directory: $PROJECT_DIR_CANDIDATE"
+
+      - name: Validate required Android project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f "$PROJECT_DIR/settings.gradle"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/gradle.properties"
+          test -f "$PROJECT_DIR/app/build.gradle"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
+          test -f "$PROJECT_DIR/app/src/main/java/com/bouh/terrainradar/MainActivity.java"
+
+          grep -q "com.android.application" "$PROJECT_DIR/build.gradle"
+          grep -q "namespace 'com.bouh.terrainradar'" "$PROJECT_DIR/app/build.gradle"
+          grep -q "MainActivity" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          if grep -R "req.getTitle()" "$PROJECT_DIR/app/src/main/java"; then
+            echo "ERROR: stale Java bug found: req.getTitle()" >&2
+            exit 1
+          fi
+
+      - name: Validate BOUH app assets and guards
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+
+          grep -q "BOUH" "$INDEX" || {
+            echo "ERROR: index.html does not contain BOUH identity." >&2
+            exit 1
+          }
+
+          grep -q "REAL COVERAGE RADAR" "$INDEX" || {
+            echo "WARNING: REAL COVERAGE RADAR label not found. Continue build." >&2
+          }
+
+          if [ -d "$PROJECT_DIR/app/src/main/assets/offline_tiles" ]; then
+            echo "Offline tiles directory found:"
+            find "$PROJECT_DIR/app/src/main/assets/offline_tiles" -type f | head -20
+          else
+            echo "No offline_tiles directory found. Build will continue, but offline tiles are not included."
+          fi
+
+          if [ -d "$PROJECT_DIR/app/src/main/assets/offline_layers" ]; then
+            echo "Offline layers directory found:"
+            find "$PROJECT_DIR/app/src/main/assets/offline_layers" -type f | head -20
+          else
+            echo "No offline_layers directory found. Build will continue."
+          fi
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle --no-daemon --stacktrace --warning-mode all :app:assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BOUH-TERRAIN-RADAR-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
