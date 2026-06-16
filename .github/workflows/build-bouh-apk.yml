@@ -1,0 +1,216 @@
+name: Build BOUH Terrain Radar APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build BOUH APK from any BOUH ZIP
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Locate and extract BOUH source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FIXED_ZIP="BOUH_TERRAIN_RADAR_ANDROID_GITHUB_ACTIONS_READY.zip"
+          WRAPPER_ZIP="BOUH_GITHUB_FIXED_UPLOAD_PACKAGE.zip"
+
+          rm -rf _bouh_build _bouh_wrapper
+          mkdir -p _bouh_build
+
+          echo "Repository files:"
+          find . -maxdepth 2 -type f | sort || true
+
+          echo "Repository ZIP files:"
+          find . -maxdepth 2 -type f -name "*.zip" | sort || true
+
+          if [ -f "$FIXED_ZIP" ]; then
+            echo "Using fixed source ZIP:"
+            echo "$FIXED_ZIP"
+            unzip -q "$FIXED_ZIP" -d _bouh_build
+
+          elif [ -f "$WRAPPER_ZIP" ]; then
+            echo "Fixed ZIP not found directly."
+            echo "Using wrapper package:"
+            echo "$WRAPPER_ZIP"
+
+            mkdir -p _bouh_wrapper
+            unzip -q "$WRAPPER_ZIP" -d _bouh_wrapper
+
+            INNER_FIXED="$(find _bouh_wrapper -type f -name "$FIXED_ZIP" | head -1 || true)"
+
+            if [ -n "$INNER_FIXED" ]; then
+              echo "Found inner fixed ZIP:"
+              echo "$INNER_FIXED"
+              unzip -q "$INNER_FIXED" -d _bouh_build
+            else
+              echo "No fixed ZIP inside wrapper. Extracting wrapper contents as possible project."
+              cp -R _bouh_wrapper/* _bouh_build/ 2>/dev/null || true
+            fi
+
+          else
+            ZIP_COUNT="$(find . -maxdepth 2 -type f -name "*.zip" | wc -l | tr -d ' ')"
+
+            if [ "$ZIP_COUNT" = "0" ]; then
+              echo "ERROR: No ZIP file found." >&2
+              echo "Upload one ZIP file to repository root, preferably:" >&2
+              echo "$FIXED_ZIP" >&2
+              echo "" >&2
+              echo "Current root files:" >&2
+              find . -maxdepth 2 -type f | sort >&2 || true
+              exit 1
+            fi
+
+            echo "No fixed name found. Extracting all ZIP files near repository root."
+
+            i=0
+            while IFS= read -r ZIP_FILE; do
+              i=$((i + 1))
+              DEST="_bouh_build/root_zip_$i"
+              mkdir -p "$DEST"
+              echo "Extracting: $ZIP_FILE"
+              unzip -q "$ZIP_FILE" -d "$DEST" || {
+                echo "WARNING: Failed to extract $ZIP_FILE. Continuing."
+              }
+            done < <(find . -maxdepth 2 -type f -name "*.zip" | sort)
+          fi
+
+          echo "Extracting nested ZIP files if any..."
+          for round in 1 2 3; do
+            echo "Nested extraction round: $round"
+            FOUND_NESTED=0
+
+            while IFS= read -r NESTED_ZIP; do
+              FOUND_NESTED=1
+              DEST="${NESTED_ZIP}_unzipped"
+              if [ ! -d "$DEST" ]; then
+                mkdir -p "$DEST"
+                echo "Extracting nested ZIP: $NESTED_ZIP"
+                unzip -q "$NESTED_ZIP" -d "$DEST" || {
+                  echo "WARNING: Failed to extract nested ZIP $NESTED_ZIP. Continuing."
+                }
+              fi
+            done < <(find _bouh_build -type f -name "*.zip" | sort)
+
+            if [ "$FOUND_NESTED" = "0" ]; then
+              echo "No more nested ZIP files."
+              break
+            fi
+          done
+
+          echo "Searching for Android project..."
+          PROJECT_DIR_CANDIDATE="$(find _bouh_build -type f -name settings.gradle -printf '%h\n' | head -1 || true)"
+
+          if [ -z "$PROJECT_DIR_CANDIDATE" ]; then
+            echo "ERROR: Could not find settings.gradle after extraction." >&2
+            echo "Extracted files sample:" >&2
+            find _bouh_build -maxdepth 8 -type f | head -300 >&2
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR_CANDIDATE" >> "$GITHUB_ENV"
+          echo "Detected project directory:"
+          echo "$PROJECT_DIR_CANDIDATE"
+
+      - name: Validate required Android project files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Validating project directory:"
+          echo "$PROJECT_DIR"
+
+          test -f "$PROJECT_DIR/settings.gradle"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/gradle.properties"
+          test -f "$PROJECT_DIR/app/build.gradle"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
+          test -f "$PROJECT_DIR/app/src/main/java/com/bouh/terrainradar/MainActivity.java"
+
+          if ! grep -R "com.android.application" "$PROJECT_DIR" >/dev/null; then
+            echo "ERROR: com.android.application plugin not found." >&2
+            exit 1
+          fi
+
+          if ! grep -R "com.bouh.terrainradar" "$PROJECT_DIR/app/build.gradle" "$PROJECT_DIR/app/src/main/AndroidManifest.xml" >/dev/null; then
+            echo "ERROR: BOUH Android package/namespace not found." >&2
+            exit 1
+          fi
+
+          if ! grep -q "MainActivity" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"; then
+            echo "ERROR: MainActivity not found in AndroidManifest.xml." >&2
+            exit 1
+          fi
+
+          if grep -R "req.getTitle()" "$PROJECT_DIR/app/src/main/java" >/dev/null; then
+            echo "ERROR: stale Java bug found: req.getTitle()" >&2
+            exit 1
+          fi
+
+      - name: Validate BOUH app assets and safety guards
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+
+          grep -q "BOUH" "$INDEX" || {
+            echo "ERROR: index.html does not contain BOUH identity." >&2
+            exit 1
+          }
+
+          if grep -q "REAL COVERAGE RADAR" "$INDEX"; then
+            echo "BOUH REAL COVERAGE RADAR label found."
+          else
+            echo "WARNING: REAL COVERAGE RADAR label not found. Build will continue."
+          fi
+
+          if grep -q "req.getTitle()" "$INDEX"; then
+            echo "ERROR: stale bug marker found inside index.html." >&2
+            exit 1
+          fi
+
+          echo "Assets summary:"
+          find "$PROJECT_DIR/app/src/main/assets" -maxdepth 3 -type f | head -120
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace --warning-mode all :app:assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BOUH-TERRAIN-RADAR-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
