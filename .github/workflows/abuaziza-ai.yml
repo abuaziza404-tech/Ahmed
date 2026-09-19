@@ -1,0 +1,667 @@
+name: Abuaziza AI — One File Android Build
+
+on:
+  workflow_dispatch:
+
+  push:
+    paths:
+      - ".github/workflows/abuaziza-ai.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          # Explicitly avoid the deprecated "tools" package.
+          packages: "platform-tools"
+
+      - name: Install Android SDK 37
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-37" \
+            "build-tools;36.0.0"
+          # sdkmanager may exit before yes finishes; do not let SIGPIPE mask sdkmanager.
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          LICENSE_STATUS=${PIPESTATUS[1]}
+          set -o pipefail
+          test "$LICENSE_STATUS" -eq 0
+
+      - name: Verify Android toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+          java -version
+          sdkmanager --version
+          sdkmanager --list_installed | grep -E 'platform-tools|platforms;android-37|build-tools;36.0.0' || true
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Prepare / repair project
+        shell: bash
+        env:
+          PERSISTENT_KEYSTORE_B64: ${{ secrets.ABUAZIZA_KEYSTORE_B64 }}
+          PERSISTENT_KEYSTORE_PASSWORD: ${{ secrets.ABUAZIZA_KEYSTORE_PASSWORD }}
+          PERSISTENT_KEY_ALIAS: ${{ secrets.ABUAZIZA_KEY_ALIAS }}
+          PERSISTENT_KEY_PASSWORD: ${{ secrets.ABUAZIZA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          # Repair the exact failure shown in the screenshot:
+          # the previous workflow assumed the Android project already existed at repository root.
+
+          if [[ ! -f settings.gradle.kts || ! -f app/build.gradle.kts ]]; then
+            FOUND_SETTINGS="$(find . -maxdepth 5 -type f -name settings.gradle.kts -not -path './.git/*' | head -1 || true)"
+            if [[ -n "$FOUND_SETTINGS" ]]; then
+              ROOT_DIR="$(dirname "$FOUND_SETTINGS")"
+              shopt -s dotglob
+              cp -a "$ROOT_DIR"/. .
+              shopt -u dotglob
+            else
+              FOUND_ZIP="$(find . -maxdepth 4 -type f -name '*.zip' -not -path './.git/*' | head -1 || true)"
+              if [[ -n "$FOUND_ZIP" ]]; then
+                rm -rf .bootstrap-unzip
+                mkdir -p .bootstrap-unzip
+                unzip -q "$FOUND_ZIP" -d .bootstrap-unzip
+                FOUND_SETTINGS="$(find .bootstrap-unzip -type f -name settings.gradle.kts | head -1 || true)"
+                if [[ -n "$FOUND_SETTINGS" ]]; then
+                  ROOT_DIR="$(dirname "$FOUND_SETTINGS")"
+                  shopt -s dotglob
+                  cp -a "$ROOT_DIR"/. .
+                  shopt -u dotglob
+                fi
+              fi
+            fi
+          fi
+
+          if [[ ! -f settings.gradle.kts || ! -f app/build.gradle.kts ]]; then
+            mkdir -p app/src/main/java/com/abuaziza/ai
+            mkdir -p app/src/main/res/values
+            mkdir -p app/src/test/java/com/abuaziza/ai
+          cat > 'settings.gradle.kts' <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "AbuazizaAI"
+          include(":app")
+          EOF
+          cat > 'build.gradle.kts' <<'EOF'
+          plugins {
+              id("com.android.application") version "9.4.0" apply false
+              id("org.jetbrains.kotlin.android") version "2.2.10" apply false
+          }
+          EOF
+          cat > 'gradle.properties' <<'EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+          cat > 'app/build.gradle.kts' <<'EOF'
+          import java.io.File
+
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          val ksPath = System.getenv("ABUAZIZA_KEYSTORE_PATH")
+          val ksPassword = System.getenv("ABUAZIZA_KEYSTORE_PASSWORD") ?: ""
+          val keyAliasEnv = System.getenv("ABUAZIZA_KEY_ALIAS") ?: ""
+          val keyPasswordEnv = System.getenv("ABUAZIZA_KEY_PASSWORD") ?: ""
+
+          android {
+              namespace = "com.abuaziza.ai"
+              compileSdk = 37
+
+              defaultConfig {
+                  applicationId = "com.abuaziza.ai"
+                  minSdk = 26
+                  targetSdk = 37
+                  versionCode = 1
+                  versionName = "1.0.0"
+                  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+              }
+
+              signingConfigs {
+                  create("release") {
+                      if (!ksPath.isNullOrBlank() && File(ksPath).exists()) {
+                          storeFile = File(ksPath)
+                          storePassword = ksPassword
+                          keyAlias = keyAliasEnv
+                          keyPassword = keyPasswordEnv
+                      }
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("release")
+                      proguardFiles(
+                          getDefaultProguardFile("proguard-android-optimize.txt"),
+                          "proguard-rules.pro"
+                      )
+                  }
+              }
+
+              packaging {
+                  resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.appcompat:appcompat:1.7.1")
+              implementation("androidx.core:core-ktx:1.17.0")
+              testImplementation("junit:junit:4.13.2")
+          }
+          EOF
+          cat > 'app/proguard-rules.pro' <<'EOF'
+          # Abuaziza AI
+          EOF
+          cat > 'app/src/main/AndroidManifest.xml' <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:allowBackup="false"
+                  android:label="أبو عزيزه AI"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Abuaziza"
+                  android:usesCleartextTraffic="false">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > 'app/src/main/res/values/styles.xml' <<'EOF'
+          <resources>
+              <style name="Theme.Abuaziza" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:navigationBarColor">#101114</item>
+                  <item name="android:statusBarColor">#101114</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:windowBackground">#101114</item>
+              </style>
+          </resources>
+          EOF
+          cat > 'app/src/main/res/values/colors.xml' <<'EOF'
+          <resources>
+              <color name="abuaziza_gold">#D4AF37</color>
+          </resources>
+          EOF
+          cat > 'app/src/main/java/com/abuaziza/ai/MainActivity.kt' <<'EOF'
+          package com.abuaziza.ai
+
+          import android.app.Activity
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.text.InputType
+          import android.view.Gravity
+          import android.widget.*
+          import android.security.keystore.KeyGenParameterSpec
+          import android.security.keystore.KeyProperties
+          import android.util.Base64
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.io.OutputStreamWriter
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.concurrent.Executors
+          import javax.crypto.Cipher
+          import javax.crypto.KeyGenerator
+          import javax.crypto.spec.GCMParameterSpec
+
+          class MainActivity : Activity() {
+              private val executor = Executors.newSingleThreadExecutor()
+              private lateinit var keyInput: EditText
+              private lateinit var modelSpinner: Spinner
+              private lateinit var webSearch: CheckBox
+              private lateinit var promptInput: EditText
+              private lateinit var output: TextView
+              private lateinit var sendButton: Button
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  buildUi()
+              }
+
+              private fun buildUi() {
+                  val bg = Color.rgb(16, 17, 20)
+                  val gold = Color.rgb(212, 175, 55)
+                  val white = Color.WHITE
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(24, 18, 24, 18)
+                      setBackgroundColor(bg)
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "أبو عزيزه AI"
+                      textSize = 28f
+                      gravity = Gravity.CENTER
+                      setTextColor(gold)
+                  }
+
+                  val subtitle = TextView(this).apply {
+                      text = "وكيل ذكاء اصطناعي مستقل لنظام Android"
+                      textSize = 13f
+                      gravity = Gravity.CENTER
+                      setTextColor(Color.LTGRAY)
+                  }
+
+                  keyInput = EditText(this).apply {
+                      hint = "مفتاح OpenAI API"
+                      setTextColor(white)
+                      setHintTextColor(Color.GRAY)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      setSingleLine(true)
+                      setText(SecureStore(this@MainActivity).load())
+                  }
+
+                  modelSpinner = Spinner(this).apply {
+                      adapter = ArrayAdapter(
+                          this@MainActivity,
+                          android.R.layout.simple_spinner_dropdown_item,
+                          listOf("gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra")
+                      )
+                  }
+
+                  webSearch = CheckBox(this).apply {
+                      text = "تمكين البحث على الويب"
+                      setTextColor(white)
+                  }
+
+                  promptInput = EditText(this).apply {
+                      hint = "اكتب المهمة التي تريد من أبو عزيزه تنفيذها..."
+                      setTextColor(white)
+                      setHintTextColor(Color.GRAY)
+                      gravity = Gravity.TOP
+                      minLines = 5
+                      inputType = InputType.TYPE_CLASS_TEXT or
+                          InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                          InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                  }
+
+                  val row = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                  }
+
+                  sendButton = Button(this).apply {
+                      text = "إرسال"
+                      setOnClickListener { sendRequest() }
+                  }
+
+                  val clearButton = Button(this).apply {
+                      text = "مسح"
+                      setOnClickListener {
+                          promptInput.text.clear()
+                          output.text = ""
+                      }
+                  }
+
+                  val copyButton = Button(this).apply {
+                      text = "نسخ"
+                      setOnClickListener {
+                          val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                          cm.setPrimaryClip(ClipData.newPlainText("Abuaziza AI", output.text.toString()))
+                          Toast.makeText(this@MainActivity, "تم النسخ", Toast.LENGTH_SHORT).show()
+                      }
+                  }
+
+                  row.addView(sendButton, LinearLayout.LayoutParams(0, -2, 1f))
+                  row.addView(clearButton, LinearLayout.LayoutParams(0, -2, 1f))
+                  row.addView(copyButton, LinearLayout.LayoutParams(0, -2, 1f))
+
+                  output = TextView(this).apply {
+                      textSize = 16f
+                      setTextColor(white)
+                      setPadding(8, 18, 8, 8)
+                      textIsSelectable = true
+                  }
+
+                  val scroll = ScrollView(this).apply {
+                      addView(output)
+                  }
+
+                  root.addView(title)
+                  root.addView(subtitle)
+                  root.addView(keyInput)
+                  root.addView(modelSpinner)
+                  root.addView(webSearch)
+                  root.addView(promptInput)
+                  root.addView(row)
+                  root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+                  setContentView(root)
+              }
+
+              private fun sendRequest() {
+                  val key = keyInput.text.toString().trim()
+                  val prompt = promptInput.text.toString().trim()
+
+                  if (key.isBlank()) {
+                      output.text = "أدخل مفتاح OpenAI API."
+                      return
+                  }
+                  if (prompt.isBlank()) {
+                      output.text = "اكتب المهمة أولاً."
+                      return
+                  }
+
+                  SecureStore(this).save(key)
+                  sendButton.isEnabled = false
+                  output.text = "جارٍ التنفيذ..."
+
+                  executor.execute {
+                      try {
+                          val result = OpenAIClient.call(
+                              apiKey = key,
+                              model = modelSpinner.selectedItem.toString(),
+                              prompt = prompt,
+                              enableWebSearch = webSearch.isChecked
+                          )
+                          runOnUiThread {
+                              output.text = result
+                              sendButton.isEnabled = true
+                          }
+                      } catch (e: Exception) {
+                          runOnUiThread {
+                              output.text = "تعذر التنفيذ: ${e.message ?: "خطأ غير معروف"}"
+                              sendButton.isEnabled = true
+                          }
+                      }
+                  }
+              }
+
+              override fun onDestroy() {
+                  executor.shutdownNow()
+                  super.onDestroy()
+              }
+          }
+
+          private object OpenAIClient {
+              fun call(apiKey: String, model: String, prompt: String, enableWebSearch: Boolean): String {
+                  val request = JSONObject().apply {
+                      put("model", model)
+                      put("store", false)
+                      put(
+                          "input",
+                          JSONArray().put(
+                              JSONObject().apply {
+                                  put("role", "user")
+                                  put(
+                                      "content",
+                                      JSONArray().put(
+                                          JSONObject().apply {
+                                              put("type", "input_text")
+                                              put("text", prompt)
+                                          }
+                                      )
+                                  )
+                              }
+                          )
+                      )
+                      if (enableWebSearch) {
+                          put(
+                              "tools",
+                              JSONArray().put(
+                                  JSONObject().apply { put("type", "web_search") }
+                              )
+                          )
+                      }
+                  }
+
+                  val conn = (URL("https://api.openai.com/v1/responses").openConnection() as HttpURLConnection).apply {
+                      requestMethod = "POST"
+                      connectTimeout = 30_000
+                      readTimeout = 120_000
+                      doOutput = true
+                      setRequestProperty("Authorization", "Bearer $apiKey")
+                      setRequestProperty("Content-Type", "application/json")
+                  }
+
+                  conn.outputStream.use { os ->
+                      OutputStreamWriter(os, Charsets.UTF_8).use { it.write(request.toString()) }
+                  }
+
+                  val code = conn.responseCode
+                  val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                  val body = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
+                  conn.disconnect()
+
+                  if (code !in 200..299) {
+                      throw IllegalStateException("HTTP $code: ${extractError(body)}")
+                  }
+                  return extractOutput(body)
+              }
+
+              private fun extractError(body: String): String {
+                  return try {
+                      JSONObject(body).optJSONObject("error")?.optString("message")
+                          ?.takeIf { it.isNotBlank() } ?: body.take(500)
+                  } catch (_: Exception) {
+                      body.take(500)
+                  }
+              }
+
+              private fun extractOutput(body: String): String {
+                  val root = JSONObject(body)
+                  root.optString("output_text").takeIf { it.isNotBlank() }?.let { return it }
+
+                  val output = root.optJSONArray("output") ?: return body.take(4000)
+                  val parts = mutableListOf<String>()
+
+                  for (i in 0 until output.length()) {
+                      val item = output.optJSONObject(i) ?: continue
+                      val content = item.optJSONArray("content") ?: continue
+                      for (j in 0 until content.length()) {
+                          val block = content.optJSONObject(j) ?: continue
+                          if (block.optString("type") == "output_text") {
+                              block.optString("text").takeIf { it.isNotBlank() }?.let(parts::add)
+                          }
+                      }
+                  }
+                  return if (parts.isNotEmpty()) parts.joinToString("\n\n") else body.take(4000)
+              }
+          }
+
+          private class SecureStore(private val context: Context) {
+              private val prefs = context.getSharedPreferences("abuaziza_secure", Context.MODE_PRIVATE)
+              private val alias = "AbuazizaApiKey"
+
+              private fun secretKey(): javax.crypto.SecretKey {
+                  val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                  if (!ks.containsAlias(alias)) {
+                      val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+                      generator.init(
+                          KeyGenParameterSpec.Builder(
+                              alias,
+                              KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                          )
+                              .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                              .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                              .setRandomizedEncryptionRequired(true)
+                              .build()
+                      )
+                      generator.generateKey()
+                  }
+                  return ks.getKey(alias, null) as javax.crypto.SecretKey
+              }
+
+              fun save(value: String) {
+                  val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                  cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+                  prefs.edit()
+                      .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                      .putString("data", Base64.encodeToString(cipher.doFinal(value.toByteArray()), Base64.NO_WRAP))
+                      .apply()
+              }
+
+              fun load(): String {
+                  return try {
+                      val data = prefs.getString("data", null) ?: return ""
+                      val ivB64 = prefs.getString("iv", null) ?: return ""
+                      val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                      cipher.init(
+                          Cipher.DECRYPT_MODE,
+                          secretKey(),
+                          GCMParameterSpec(128, Base64.decode(ivB64, Base64.NO_WRAP))
+                      )
+                      String(cipher.doFinal(Base64.decode(data, Base64.NO_WRAP)), Charsets.UTF_8)
+                  } catch (_: Exception) {
+                      ""
+                  }
+              }
+          }
+          EOF
+          cat > 'app/src/test/java/com/abuaziza/ai/SmokeTest.kt' <<'EOF'
+          package com.abuaziza.ai
+
+          import org.junit.Assert.assertEquals
+          import org.junit.Assert.assertTrue
+          import org.junit.Test
+
+          class SmokeTest {
+              @Test
+              fun applicationIdPackageIsCorrect() {
+                  assertEquals("com.abuaziza.ai", MainActivity::class.java.packageName)
+              }
+
+              @Test
+              fun supportedModelIdsArePresent() {
+                  assertTrue("gpt-5.6-terra".startsWith("gpt-5.6-"))
+                  assertTrue("gpt-6-astra".startsWith("gpt-6-"))
+              }
+          }
+          EOF
+          fi
+
+          # Create a release-signing key for this run when persistent GitHub Secrets are absent.
+          if [[ -n "${PERSISTENT_KEYSTORE_B64:-}" ]]; then
+            echo "$PERSISTENT_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/abuaziza-release.jks"
+            test -s "$RUNNER_TEMP/abuaziza-release.jks"
+            {
+              echo "ABUAZIZA_KEYSTORE_PATH=$RUNNER_TEMP/abuaziza-release.jks"
+              echo "ABUAZIZA_KEYSTORE_PASSWORD=$PERSISTENT_KEYSTORE_PASSWORD"
+              echo "ABUAZIZA_KEY_ALIAS=$PERSISTENT_KEY_ALIAS"
+              echo "ABUAZIZA_KEY_PASSWORD=$PERSISTENT_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v     -keystore "$RUNNER_TEMP/abuaziza-ci.jks"     -storepass "abuaziza-ci"     -keypass "abuaziza-ci"     -alias "abuaziza"     -keyalg RSA     -keysize 2048     -validity 10000     -dname "CN=Abuaziza AI, OU=CI, O=Abuaziza, L=Unknown, ST=Unknown, C=SD"
+            {
+              echo "ABUAZIZA_KEYSTORE_PATH=$RUNNER_TEMP/abuaziza-ci.jks"
+              echo "ABUAZIZA_KEYSTORE_PASSWORD=abuaziza-ci"
+              echo "ABUAZIZA_KEY_ALIAS=abuaziza"
+              echo "ABUAZIZA_KEY_PASSWORD=abuaziza-ci"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate project and secret hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          ! grep -RniE 'sk-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}' .             --exclude-dir=.git --exclude-dir=.gradle             || { echo "Possible OpenAI API key found in repository"; exit 1; }
+          ! grep -RniE 'Runtime\.getRuntime|ProcessBuilder|cleartextTrafficPermitted="true"' app             || { echo "Unsafe execution or cleartext networking pattern found"; exit 1; }
+
+      - name: Generate Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle wrapper --gradle-version 9.6.0 --distribution-type bin
+          chmod +x gradlew
+
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
+
+      - name: Android Lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Build signed release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -1)"
+          test -n "$APK"
+          test -s "$APK"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
+
+          sha256sum "$APK" | tee apk.sha256
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abuaziza-AI-release
+          path: |
+            ${{ env.APK_PATH }}
+            apk.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="abuaziza-v1.0.${{ github.run_number }}"
+          gh release create "$TAG" \
+            "$APK_PATH#Abuaziza AI APK" \
+            "apk.sha256#SHA-256" \
+            --title "Abuaziza AI v1.0.${{ github.run_number }}" \
+            --notes "Automated Android release built and verified by GitHub Actions."
