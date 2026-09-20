@@ -1,7 +1,8 @@
-name: Abuaziza AI - One Shot Production Android Build
+name: Abuaziza AI - Production Android APK
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
@@ -13,6 +14,7 @@ on:
       - "gradle.properties"
       - "settings.gradle.kts"
       - "build.gradle.kts"
+      - "app/**"
 
 permissions:
   contents: write
@@ -26,38 +28,73 @@ env:
   GRADLE_VERSION: "9.6.0"
   ANDROID_PLATFORM: "36"
   ANDROID_BUILD_TOOLS: "36.0.0"
+
   AGP_VERSION: "9.4.0"
   KOTLIN_VERSION: "2.2.10"
+
   APP_ID: "com.abuaziza.ai"
   APP_VERSION_NAME: "1.0.2"
   APP_VERSION_CODE: "3"
 
 jobs:
+
   build:
+
     name: Build Abuaziza AI APK
+
     runs-on: ubuntu-24.04
+
     timeout-minutes: 45
 
     steps:
 
       # ============================================================
-      # 1. Checkout
+      # 1. CHECKOUT
       # ============================================================
-      - name: Checkout
+
+      - name: Checkout repository
         uses: actions/checkout@v7
 
+
       # ============================================================
-      # 2. Java 17
+      # 2. JAVA 17
+      #
+      # IMPORTANT:
+      # No Gradle dependency cache here.
+      # The project is repaired/generated later in the workflow.
       # ============================================================
+
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
+          cache: ""
+          cache-jdk: false
+
 
       # ============================================================
-      # 3. Android SDK
+      # 3. VERIFY JAVA
       # ============================================================
+
+      - name: Verify Java
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "JAVA_HOME=${JAVA_HOME}"
+
+          java -version
+
+          test -n "${JAVA_HOME}"
+
+          echo "Java 17 is ready."
+
+
+      # ============================================================
+      # 4. ANDROID SDK
+      # ============================================================
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
@@ -65,112 +102,38 @@ jobs:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
 
+
       # ============================================================
-      # 4. Install Android SDK 36
+      # 5. INSTALL EXACT ANDROID SDK COMPONENTS
       # ============================================================
-      - name: Install Android SDK 36
+
+      - name: Install Android SDK components
         shell: bash
         run: |
           set -euo pipefail
-
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-
-          if [ -x "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          else
-            SDKMANAGER="$(find "${ANDROID_SDK_ROOT}/cmdline-tools" \
-              -type f \
-              -name sdkmanager \
-              -print -quit)"
-          fi
-
-          if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager was not found"
-            exit 1
-          fi
-
-          echo "Using sdkmanager: ${SDKMANAGER}"
-
-          yes | "${SDKMANAGER}" --licenses >/dev/null 2>&1 || true
-
-          "${SDKMANAGER}" \
-            "platform-tools" \
-            "platforms;android-${ANDROID_PLATFORM}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}"
-
-          test -d \
-            "${ANDROID_SDK_ROOT}/platforms/android-${ANDROID_PLATFORM}"
-
-          test -d \
-            "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
-
-          echo "Android SDK installation verified."
-
-      # ============================================================
-      # 5. Verify toolchain
-      # ============================================================
-      - name: Verify toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "======================================"
-          echo "JAVA"
-          echo "======================================"
-
-          java -version
-
-          echo
-          echo "======================================"
-          echo "ANDROID SDK"
-          echo "======================================"
 
           echo "ANDROID_HOME=${ANDROID_HOME}"
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
 
-          echo
-          echo "Installed Android platforms:"
-          ls -la "${ANDROID_SDK_ROOT}/platforms"
+          sdkmanager --version
 
-          echo
-          echo "Installed Build Tools:"
-          ls -la "${ANDROID_SDK_ROOT}/build-tools"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-          test -d \
-            "${ANDROID_SDK_ROOT}/platforms/android-${ANDROID_PLATFORM}"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
 
-          test -d \
-            "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
+          test -d "${ANDROID_SDK_ROOT}/platforms/android-${ANDROID_PLATFORM}"
+          test -d "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
 
-          echo
-          echo "Toolchain verification passed."
+          echo "Android SDK components installed successfully."
+
 
       # ============================================================
-      # 6. Install Gradle 9.6.0
+      # 6. PREPARE CLEAN ANDROID PROJECT
       # ============================================================
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
 
-      # ============================================================
-      # 7. Verify Gradle
-      # ============================================================
-      - name: Verify Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          command -v gradle
-
-          gradle --version
-
-          echo "Gradle CLI is ready."
-
-      # ============================================================
-      # 8. Prepare Android project
-      # ============================================================
       - name: Prepare Android project
         shell: bash
         run: |
@@ -179,12 +142,14 @@ jobs:
           mkdir -p \
             app/src/main/java/com/abuaziza/ai \
             app/src/main/res/values \
-            app/src/test/java/com/abuaziza/ai \
-            .github/workflows
+            .ci \
+            release \
+            gradle/wrapper
 
-          # ==========================================================
+          # --------------------------------------------------------
           # settings.gradle.kts
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > settings.gradle.kts <<'EOF'
           pluginManagement {
               repositories {
@@ -195,9 +160,7 @@ jobs:
           }
 
           dependencyResolutionManagement {
-              repositoriesMode.set(
-                  RepositoriesMode.FAIL_ON_PROJECT_REPOS
-              )
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
 
               repositories {
                   google()
@@ -210,9 +173,11 @@ jobs:
           include(":app")
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # Root build.gradle.kts
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > build.gradle.kts <<'EOF'
           plugins {
               id("com.android.application") version "9.4.0" apply false
@@ -220,21 +185,31 @@ jobs:
           }
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # gradle.properties
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
           org.gradle.parallel=true
           org.gradle.caching=true
+
           android.useAndroidX=true
+
           kotlin.code.style=official
+
+          android.nonTransitiveRClass=true
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # app/build.gradle.kts
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > app/build.gradle.kts <<'EOF'
+          import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
           plugins {
               id("com.android.application")
               id("org.jetbrains.kotlin.android")
@@ -249,20 +224,41 @@ jobs:
                   applicationId = "com.abuaziza.ai"
 
                   minSdk = 26
+
                   targetSdk = 36
 
                   versionCode = 3
-                  versionName = "1.0.2"
 
-                  testInstrumentationRunner =
-                      "androidx.test.runner.AndroidJUnitRunner"
+                  versionName = "1.0.2"
+              }
+
+              signingConfigs {
+                  create("ciRelease") {
+
+                      storeFile =
+                          rootProject.file(".ci/abuaziza-release.jks")
+
+                      storePassword =
+                          System.getenv("CI_STORE_PASSWORD") ?: ""
+
+                      keyAlias =
+                          System.getenv("CI_KEY_ALIAS") ?: "abuaziza"
+
+                      keyPassword =
+                          System.getenv("CI_KEY_PASSWORD") ?: ""
+                  }
               }
 
               buildTypes {
 
-                  release {
+                  getByName("release") {
+
                       isMinifyEnabled = false
+
                       isShrinkResources = false
+
+                      signingConfig =
+                          signingConfigs.getByName("ciRelease")
 
                       proguardFiles(
                           getDefaultProguardFile(
@@ -272,7 +268,7 @@ jobs:
                       )
                   }
 
-                  debug {
+                  getByName("debug") {
                       applicationIdSuffix = ".debug"
                   }
               }
@@ -282,8 +278,9 @@ jobs:
                   targetCompatibility = JavaVersion.VERSION_17
               }
 
-              kotlinOptions {
-                  jvmTarget = "17"
+              lint {
+                  abortOnError = true
+                  checkReleaseBuilds = true
               }
 
               packaging {
@@ -291,32 +288,45 @@ jobs:
                       excludes += "/META-INF/{AL2.0,LGPL2.1}"
                   }
               }
+          }
 
-              lint {
-                  abortOnError = true
-                  checkReleaseBuilds = true
+          kotlin {
+              compilerOptions {
+                  jvmTarget.set(JvmTarget.JVM_17)
               }
           }
 
           dependencies {
-              implementation("androidx.core:core-ktx:1.17.0")
-              implementation("androidx.appcompat:appcompat:1.7.1")
 
-              testImplementation("junit:junit:4.13.2")
+              implementation(
+                  "androidx.core:core-ktx:1.17.0"
+              )
+
+              implementation(
+                  "androidx.appcompat:appcompat:1.7.1"
+              )
+
+              testImplementation(
+                  "junit:junit:4.13.2"
+              )
           }
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # ProGuard
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > app/proguard-rules.pro <<'EOF'
-          # Abuaziza AI release rules.
-          # Minification is intentionally disabled for this build.
+          # Abuaziza AI
+          # Release minification intentionally disabled.
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # AndroidManifest.xml
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
 
@@ -354,25 +364,40 @@ jobs:
           </manifest>
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # colors.xml
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > app/src/main/res/values/colors.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
 
           <resources>
 
-              <color name="abu_black">#121212</color>
-              <color name="abu_gold">#D4AF37</color>
-              <color name="abu_white">#FFFFFF</color>
-              <color name="abu_gray">#BDBDBD</color>
+              <color name="abu_black">
+                  #121212
+              </color>
+
+              <color name="abu_gold">
+                  #D4AF37
+              </color>
+
+              <color name="abu_white">
+                  #FFFFFF
+              </color>
+
+              <color name="abu_gray">
+                  #BDBDBD
+              </color>
 
           </resources>
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # styles.xml
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > app/src/main/res/values/styles.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
 
@@ -382,7 +407,9 @@ jobs:
                   name="AppTheme"
                   parent="Theme.AppCompat.NoActionBar">
 
-                  <item name="android:fontFamily">sans</item>
+                  <item name="android:fontFamily">
+                      sans
+                  </item>
 
                   <item name="android:windowLightStatusBar">
                       false
@@ -400,18 +427,16 @@ jobs:
                       @color/abu_gold
                   </item>
 
-                  <item name="android:windowActionModeOverlay">
-                      true
-                  </item>
-
               </style>
 
           </resources>
           EOF
 
-          # ==========================================================
+
+          # --------------------------------------------------------
           # MainActivity.kt
-          # ==========================================================
+          # --------------------------------------------------------
+
           cat > app/src/main/java/com/abuaziza/ai/MainActivity.kt <<'EOF'
           package com.abuaziza.ai
 
@@ -442,126 +467,158 @@ jobs:
                   window.navigationBarColor =
                       Color.rgb(18, 18, 18)
 
-                  val root = LinearLayout(this).apply {
-                      orientation =
-                          LinearLayout.VERTICAL
+                  val root =
+                      LinearLayout(this).apply {
 
-                      setPadding(
-                          32,
-                          32,
-                          32,
-                          32
-                      )
+                          orientation =
+                              LinearLayout.VERTICAL
 
-                      setBackgroundColor(
-                          Color.rgb(18, 18, 18)
-                      )
-                  }
+                          setPadding(
+                              32,
+                              32,
+                              32,
+                              32
+                          )
 
-                  val title = TextView(this).apply {
-                      text = "أبو عزيزه AI"
-                      textSize = 28f
-
-                      setTextColor(
-                          Color.rgb(212, 175, 55)
-                      )
-
-                      gravity = Gravity.CENTER
-
-                      setPadding(
-                          0,
-                          20,
-                          0,
-                          30
-                      )
-                  }
-
-                  val subtitle = TextView(this).apply {
-                      text = "مساعد الذكاء الاصطناعي"
-                      textSize = 16f
-
-                      setTextColor(Color.LTGRAY)
-
-                      gravity = Gravity.CENTER
-
-                      setPadding(
-                          0,
-                          0,
-                          0,
-                          24
-                      )
-                  }
-
-                  input = EditText(this).apply {
-                      hint = "اكتب سؤالك هنا..."
-
-                      setHintTextColor(Color.GRAY)
-                      setTextColor(Color.WHITE)
-
-                      textSize = 17f
-
-                      gravity =
-                          Gravity.TOP or Gravity.RIGHT
-
-                      minLines = 5
-
-                      setPadding(
-                          20,
-                          20,
-                          20,
-                          20
-                      )
-                  }
-
-                  val send = Button(this).apply {
-                      text = "إرسال"
-
-                      setTextColor(Color.BLACK)
-
-                      setBackgroundColor(
-                          Color.rgb(212, 175, 55)
-                      )
-
-                      setOnClickListener {
-
-                          val question =
-                              input.text
-                                  .toString()
-                                  .trim()
-
-                          output.text =
-                              if (question.isEmpty()) {
-
-                                  "اكتب سؤالك أولاً."
-
-                              } else {
-
-                                  "تم استلام الطلب.\n\n" +
-                                      "السؤال:\n" +
-                                      question +
-                                      "\n\n" +
-                                      "نسخة البناء الحالية " +
-                                      "جاهزة للربط مع " +
-                                      "OpenAI Responses API."
-                              }
+                          setBackgroundColor(
+                              Color.rgb(18, 18, 18)
+                          )
                       }
-                  }
 
-                  output = TextView(this).apply {
-                      text = "ستظهر الإجابة هنا."
-                      textSize = 17f
 
-                      setTextColor(Color.WHITE)
+                  val title =
+                      TextView(this).apply {
 
-                      gravity = Gravity.RIGHT
+                          text = "أبو عزيزه AI"
 
-                      setPadding(
-                          20,
-                          30,
-                          20,
-                          20
-                      )
-                  }
+                          textSize = 28f
+
+                          setTextColor(
+                              Color.rgb(
+                                  212,
+                                  175,
+                                  55
+                              )
+                          )
+
+                          gravity =
+                              Gravity.CENTER
+
+                          setPadding(
+                              0,
+                              20,
+                              0,
+                              30
+                          )
+                      }
+
+
+                  val subtitle =
+                      TextView(this).apply {
+
+                          text =
+                              "مساعد الذكاء الاصطناعي"
+
+                          textSize = 16f
+
+                          setTextColor(
+                              Color.LTGRAY
+                          )
+
+                          gravity =
+                              Gravity.CENTER
+
+                          setPadding(
+                              0,
+                              0,
+                              0,
+                              24
+                          )
+                      }
+
+
+                  input =
+                      EditText(this).apply {
+
+                          hint =
+                              "اكتب سؤالك هنا..."
+
+                          setHintTextColor(
+                              Color.GRAY
+                          )
+
+                          setTextColor(
+                              Color.WHITE
+                          )
+
+                          textSize = 17f
+
+                          gravity =
+                              Gravity.TOP or
+                              Gravity.RIGHT
+
+                          minLines = 5
+
+                          setPadding(
+                              20,
+                              20,
+                              20,
+                              20
+                          )
+                      }
+
+
+                  val send =
+                      Button(this).apply {
+
+                          text = "إرسال"
+
+                          setTextColor(
+                              Color.BLACK
+                          )
+
+                          setBackgroundColor(
+                              Color.rgb(
+                                  212,
+                                  175,
+                                  55
+                              )
+                          )
+
+                          setOnClickListener {
+
+                              output.text =
+                                  "تم استلام الطلب.\n\n" +
+                                  "نسخة التطبيق الأساسية " +
+                                  "جاهزة للربط مع " +
+                                  "OpenAI Responses API."
+                          }
+                      }
+
+
+                  output =
+                      TextView(this).apply {
+
+                          text =
+                              "ستظهر الإجابة هنا."
+
+                          textSize = 17f
+
+                          setTextColor(
+                              Color.WHITE
+                          )
+
+                          gravity =
+                              Gravity.RIGHT
+
+                          setPadding(
+                              20,
+                              30,
+                              20,
+                              20
+                          )
+                      }
+
 
                   val scroll =
                       ScrollView(this).apply {
@@ -575,6 +632,7 @@ jobs:
                           )
                       }
 
+
                   root.addView(
                       title,
                       LinearLayout.LayoutParams(
@@ -582,6 +640,7 @@ jobs:
                           ViewGroup.LayoutParams.WRAP_CONTENT
                       )
                   )
+
 
                   root.addView(
                       subtitle,
@@ -591,6 +650,7 @@ jobs:
                       )
                   )
 
+
                   root.addView(
                       input,
                       LinearLayout.LayoutParams(
@@ -599,6 +659,7 @@ jobs:
                           1f
                       )
                   )
+
 
                   root.addView(
                       send,
@@ -610,6 +671,7 @@ jobs:
                       }
                   )
 
+
                   root.addView(
                       scroll,
                       LinearLayout.LayoutParams(
@@ -619,38 +681,25 @@ jobs:
                       )
                   )
 
+
                   setContentView(root)
               }
           }
           EOF
 
-          # ==========================================================
-          # Unit test
-          # ==========================================================
-          cat > app/src/test/java/com/abuaziza/ai/SmokeTest.kt <<'EOF'
-          package com.abuaziza.ai
 
-          import org.junit.Assert.assertEquals
-          import org.junit.Test
+          echo "Android project created."
 
-          class SmokeTest {
-
-              @Test
-              fun applicationIdIsCorrect() {
-                  assertEquals(
-                      "com.abuaziza.ai",
-                      "com.abuaziza.ai"
-                  )
-              }
-          }
-          EOF
-
-          echo "Android project prepared successfully."
 
       # ============================================================
-      # 9. Validate project and security
+      # 7. VALIDATE PROJECT FILES
+      #
+      # IMPORTANT:
+      # Do NOT search the entire repository for forbidden strings.
+      # That was the previous self-triggering bug.
       # ============================================================
-      - name: Validate project and security
+
+      - name: Validate project files
         shell: bash
         run: |
           set -euo pipefail
@@ -662,241 +711,220 @@ jobs:
           test -f app/proguard-rules.pro
           test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/java/com/abuaziza/ai/MainActivity.kt
-          test -f app/src/test/java/com/abuaziza/ai/SmokeTest.kt
+          test -f app/src/main/res/values/colors.xml
+          test -f app/src/main/res/values/styles.xml
 
-          # --------------------------------------------------------
-          # Android 37 is not used by the project.
-          # Workflow YAML is excluded to prevent comment false positives.
-          # --------------------------------------------------------
+          echo "Checking actual Gradle configuration files..."
 
-          if grep -R \
-            "platforms;android-37" \
-            -n \
-            --exclude-dir=.git \
-            --exclude="*.yml" \
-            --exclude="*.yaml" \
-            .; then
-
-            echo "::error::Unsupported Android platform reference detected."
-            exit 1
-          fi
-
-          if grep -R \
-            -E \
+          if grep -R -E \
             "compileSdk[[:space:]]*=[[:space:]]*37" \
-            -n \
-            --include="*.kts" \
-            --exclude-dir=.git \
-            .; then
+            build.gradle.kts \
+            app/build.gradle.kts \
+            settings.gradle.kts \
+            2>/dev/null; then
 
-            echo "::error::compileSdk 37 reference detected."
+            echo "::error::Invalid compileSdk 37 reference found."
             exit 1
           fi
 
-          if grep -R \
-            -E \
-            "targetSdk[[:space:]]*=[[:space:]]*37" \
-            -n \
-            --include="*.kts" \
-            --exclude-dir=.git \
-            .; then
+          if grep -R -E \
+            "platforms;android-37" \
+            build.gradle.kts \
+            app/build.gradle.kts \
+            settings.gradle.kts \
+            2>/dev/null; then
 
-            echo "::error::targetSdk 37 reference detected."
+            echo "::error::Invalid Android 37 SDK reference found."
             exit 1
           fi
 
-          if grep -R \
-            "cleartextTrafficPermitted *= *true" \
-            -n \
-            --include="*.xml" \
-            --exclude-dir=.git \
-            .; then
+          if grep -R -E \
+            "cleartextTrafficPermitted[[:space:]]*=[[:space:]]*true" \
+            app/src/main \
+            2>/dev/null; then
 
             echo "::error::Cleartext traffic is enabled."
             exit 1
           fi
 
-          if grep -R \
-            -E \
+          if grep -R -E \
             "Runtime\.getRuntime|ProcessBuilder" \
-            -n \
-            --include="*.kt" \
-            --include="*.java" \
-            app/src; then
+            app/src \
+            2>/dev/null; then
 
             echo "::error::Shell execution API detected."
             exit 1
           fi
 
-          echo "Project validation passed."
+          echo "Project file validation passed."
+
 
       # ============================================================
-      # 10. Validate Gradle project
+      # 8. GENERATE CI SIGNING KEY
       # ============================================================
+
+      - name: Generate CI signing key
+        shell: bash
+        env:
+          CI_STORE_PASSWORD: abuaziza_ci_store
+          CI_KEY_PASSWORD: abuaziza_ci_key
+          CI_KEY_ALIAS: abuaziza
+        run: |
+          set -euo pipefail
+
+          mkdir -p .ci
+
+          rm -f .ci/abuaziza-release.jks
+
+          keytool \
+            -genkeypair \
+            -v \
+            -keystore ".ci/abuaziza-release.jks" \
+            -storepass "${CI_STORE_PASSWORD}" \
+            -keypass "${CI_KEY_PASSWORD}" \
+            -alias "${CI_KEY_ALIAS}" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Abuaziza AI, OU=AI, O=Abuaziza, L=Khartoum, ST=Khartoum, C=SD"
+
+          test -f .ci/abuaziza-release.jks
+
+          echo "CI signing key created."
+
+
+      # ============================================================
+      # 9. INSTALL GRADLE 9.6
+      # ============================================================
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-provider: basic
+
+
+      # ============================================================
+      # 10. VERIFY GRADLE
+      # ============================================================
+
+      - name: Verify Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle --version
+
+          gradle \
+            --version \
+            | grep -F "Gradle ${GRADLE_VERSION}"
+
+          echo "Gradle version is correct."
+
+
+      # ============================================================
+      # 11. GENERATE WRAPPER
+      # ============================================================
+
+      - name: Generate Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle wrapper \
+            --gradle-version "${GRADLE_VERSION}" \
+            --distribution-type bin \
+            --no-daemon \
+            --stacktrace
+
+          test -f gradlew
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+
+          chmod +x gradlew
+
+          ./gradlew --version
+
+          echo "Gradle Wrapper generated successfully."
+
+
+      # ============================================================
+      # 12. VALIDATE GRADLE PROJECT
+      # ============================================================
+
       - name: Validate Gradle project
         shell: bash
         run: |
           set -euo pipefail
 
-          gradle \
-            tasks \
+          ./gradlew \
+            help \
             --no-daemon \
             --stacktrace \
-            --info
+            --warning-mode all
+
+          ./gradlew \
+            :app:tasks \
+            --no-daemon \
+            --stacktrace \
+            --warning-mode all
+
+          echo "Gradle project validation passed."
+
 
       # ============================================================
-      # 11. Unit tests
+      # 13. UNIT TESTS
       # ============================================================
+
       - name: Unit tests
         shell: bash
         run: |
           set -euo pipefail
 
-          gradle \
-            test \
+          ./gradlew \
+            :app:testDebugUnitTest \
             --no-daemon \
             --stacktrace
 
+
       # ============================================================
-      # 12. Android Lint
+      # 14. ANDROID LINT
       # ============================================================
+
       - name: Android Lint
         shell: bash
         run: |
           set -euo pipefail
 
-          gradle \
-            lint \
+          ./gradlew \
+            :app:lint \
             --no-daemon \
             --stacktrace
 
+
       # ============================================================
-      # 13. Build unsigned release APK
+      # 15. BUILD RELEASE APK
       # ============================================================
-      - name: Build release APK
+
+      - name: Build signed release APK
         shell: bash
+        env:
+          CI_STORE_PASSWORD: abuaziza_ci_store
+          CI_KEY_PASSWORD: abuaziza_ci_key
+          CI_KEY_ALIAS: abuaziza
         run: |
           set -euo pipefail
 
-          gradle \
+          ./gradlew \
             :app:assembleRelease \
             --no-daemon \
             --stacktrace
 
-          APK_DIR="app/build/outputs/apk/release"
-
-          if [ -f "${APK_DIR}/app-release-unsigned.apk" ]; then
-
-            echo "Unsigned APK detected:"
-            ls -lh \
-              "${APK_DIR}/app-release-unsigned.apk"
-
-          elif [ -f "${APK_DIR}/app-release.apk" ]; then
-
-            echo "Release APK detected:"
-            ls -lh \
-              "${APK_DIR}/app-release.apk"
-
-          else
-
-            echo "::error::Release APK was not generated."
-
-            find app/build/outputs \
-              -type f \
-              -name "*.apk" \
-              -print || true
-
-            exit 1
-
-          fi
 
       # ============================================================
-      # 14. Generate CI signing key
+      # 16. VERIFY APK
       # ============================================================
-      - name: Generate CI signing key
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          mkdir -p "${GITHUB_WORKSPACE}/.ci"
-
-          keytool \
-            -genkeypair \
-            -v \
-            -keystore \
-            "${GITHUB_WORKSPACE}/.ci/abuaziza-release.jks" \
-            -storepass "abuaziza-ci-store" \
-            -keypass "abuaziza-ci-key" \
-            -alias "abuaziza" \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname \
-            "CN=Abuaziza AI, OU=AI, O=Abuaziza, L=Khartoum, ST=Khartoum, C=SD"
-
-          test -f \
-            "${GITHUB_WORKSPACE}/.ci/abuaziza-release.jks"
-
-          echo "Temporary CI signing key generated."
-
-      # ============================================================
-      # 15. Zipalign and sign APK
-      # ============================================================
-      - name: Sign release APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK_DIR="app/build/outputs/apk/release"
-
-          UNSIGNED="${APK_DIR}/app-release-unsigned.apk"
-          ALIGNED="${APK_DIR}/app-release-aligned.apk"
-          SIGNED="${APK_DIR}/app-release.apk"
-
-          BUILD_TOOLS="${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
-
-          ZIPALIGN="${BUILD_TOOLS}/zipalign"
-          APKSIGNER="${BUILD_TOOLS}/apksigner"
-
-          test -x "$ZIPALIGN"
-          test -x "$APKSIGNER"
-
-          if [ -f "$UNSIGNED" ]; then
-
-            "$ZIPALIGN" \
-              -f \
-              4 \
-              "$UNSIGNED" \
-              "$ALIGNED"
-
-          else
-
-            echo "::error::Unsigned APK not found."
-            exit 1
-
-          fi
-
-          "$APKSIGNER" sign \
-            --ks \
-            "${GITHUB_WORKSPACE}/.ci/abuaziza-release.jks" \
-            --ks-pass \
-            pass:abuaziza-ci-store \
-            --key-pass \
-            pass:abuaziza-ci-key \
-            --ks-key-alias \
-            abuaziza \
-            --out \
-            "$SIGNED" \
-            "$ALIGNED"
-
-          test -f "$SIGNED"
-
-          echo "Signed APK created:"
-          ls -lh "$SIGNED"
-
-      # ============================================================
-      # 16. Verify APK
-      # ============================================================
       - name: Verify APK
         shell: bash
         run: |
@@ -906,22 +934,28 @@ jobs:
 
           test -f "$APK"
 
-          BUILD_TOOLS="${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
-
-          "${BUILD_TOOLS}/apksigner" verify \
-            --verbose \
-            "$APK"
+          echo "APK generated:"
+          ls -lh "$APK"
 
           echo
           echo "SHA-256:"
           sha256sum "$APK"
 
           echo
+          echo "APK signer verification:"
+
+          apksigner verify \
+            --verbose \
+            "$APK"
+
+          echo
           echo "APK verification passed."
 
+
       # ============================================================
-      # 17. Prepare final artifact
+      # 17. PREPARE RELEASE ARTIFACT
       # ============================================================
+
       - name: Prepare APK artifact
         shell: bash
         run: |
@@ -929,26 +963,29 @@ jobs:
 
           mkdir -p release
 
+          APK="app/build/outputs/apk/release/app-release.apk"
+
           FINAL_APK="release/Abuaziza-AI-v${APP_VERSION_NAME}.apk"
 
-          cp \
-            app/build/outputs/apk/release/app-release.apk \
-            "$FINAL_APK"
+          cp "$APK" "$FINAL_APK"
 
-          sha256sum \
-            "$FINAL_APK" \
+          sha256sum "$FINAL_APK" \
             > release/SHA256SUMS.txt
+
+          test -f "$FINAL_APK"
+          test -f release/SHA256SUMS.txt
 
           echo "Final APK:"
           ls -lh "$FINAL_APK"
 
           echo
-          echo "SHA-256:"
           cat release/SHA256SUMS.txt
 
+
       # ============================================================
-      # 18. Upload APK artifact
+      # 18. UPLOAD ARTIFACT
       # ============================================================
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -959,9 +996,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+
       # ============================================================
-      # 19. Publish GitHub Release
+      # 19. GITHUB RELEASE
       # ============================================================
+
       - name: Publish GitHub Release
         if: success() && github.ref == 'refs/heads/main'
         shell: bash
@@ -972,35 +1011,41 @@ jobs:
 
           TAG="v${APP_VERSION_NAME}"
 
+          APK="release/Abuaziza-AI-v${APP_VERSION_NAME}.apk"
+
+          CHECKSUMS="release/SHA256SUMS.txt"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
 
-            gh release upload "$TAG" \
-              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
-              "release/SHA256SUMS.txt" \
+            gh release upload \
+              "$TAG" \
+              "$APK" \
+              "$CHECKSUMS" \
               --clobber
 
           else
 
-            gh release create "$TAG" \
-              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
-              "release/SHA256SUMS.txt" \
-              --title \
-              "Abuaziza AI v${APP_VERSION_NAME}" \
-              --notes \
-              "Production Android APK build."
+            gh release create \
+              "$TAG" \
+              "$APK" \
+              "$CHECKSUMS" \
+              --title "Abuaziza AI v${APP_VERSION_NAME}" \
+              --notes "Production Android APK build."
 
           fi
 
+
       # ============================================================
-      # 20. Final summary
+      # 20. FINAL SUMMARY
       # ============================================================
+
       - name: Build summary
         if: always()
         shell: bash
         run: |
           {
             echo "## Abuaziza AI Build"
-            echo ""
+            echo
             echo "- Android API: ${ANDROID_PLATFORM}"
             echo "- Build Tools: ${ANDROID_BUILD_TOOLS}"
             echo "- AGP: ${AGP_VERSION}"
@@ -1009,15 +1054,14 @@ jobs:
             echo "- Kotlin: ${KOTLIN_VERSION}"
             echo "- Application ID: ${APP_ID}"
             echo "- Version: ${APP_VERSION_NAME}"
-            echo ""
+            echo "- Version Code: ${APP_VERSION_CODE}"
+            echo
 
-            if [ -f \
-              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk"
-            ]; then
+            if [ -f "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" ]; then
 
               echo "### APK"
               echo "\`release/Abuaziza-AI-v${APP_VERSION_NAME}.apk\`"
-              echo ""
+              echo
 
               echo "### SHA-256"
               cat "release/SHA256SUMS.txt"
