@@ -48,9 +48,6 @@ jobs:
 
       # ============================================================
       # 2. Java 17
-      # IMPORTANT:
-      # Gradle cache is intentionally NOT enabled here because the
-      # Android/Gradle project is created later in this workflow.
       # ============================================================
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -59,7 +56,7 @@ jobs:
           java-version: "17"
 
       # ============================================================
-      # 3. Android SDK command-line tools
+      # 3. Android SDK
       # ============================================================
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -121,12 +118,14 @@ jobs:
           echo "======================================"
           echo "JAVA"
           echo "======================================"
+
           java -version
 
           echo
           echo "======================================"
           echo "ANDROID SDK"
           echo "======================================"
+
           echo "ANDROID_HOME=${ANDROID_HOME}"
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
 
@@ -148,7 +147,7 @@ jobs:
           echo "Toolchain verification passed."
 
       # ============================================================
-      # 6. Set up Gradle
+      # 6. Install Gradle 9.6.0
       # ============================================================
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
@@ -156,7 +155,21 @@ jobs:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
       # ============================================================
-      # 7. Prepare / repair Android project
+      # 7. Verify Gradle
+      # ============================================================
+      - name: Verify Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          command -v gradle
+
+          gradle --version
+
+          echo "Gradle CLI is ready."
+
+      # ============================================================
+      # 8. Prepare Android project
       # ============================================================
       - name: Prepare Android project
         shell: bash
@@ -182,7 +195,9 @@ jobs:
           }
 
           dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositoriesMode.set(
+                  RepositoriesMode.FAIL_ON_PROJECT_REPOS
+              )
 
               repositories {
                   google()
@@ -296,7 +311,7 @@ jobs:
           # ==========================================================
           cat > app/proguard-rules.pro <<'EOF'
           # Abuaziza AI release rules.
-          # Minification is disabled for this CI bootstrap build.
+          # Minification is intentionally disabled for this build.
           EOF
 
           # ==========================================================
@@ -445,7 +460,6 @@ jobs:
 
                   val title = TextView(this).apply {
                       text = "أبو عزيزه AI"
-
                       textSize = 28f
 
                       setTextColor(
@@ -464,7 +478,6 @@ jobs:
 
                   val subtitle = TextView(this).apply {
                       text = "مساعد الذكاء الاصطناعي"
-
                       textSize = 16f
 
                       setTextColor(Color.LTGRAY)
@@ -483,7 +496,6 @@ jobs:
                       hint = "اكتب سؤالك هنا..."
 
                       setHintTextColor(Color.GRAY)
-
                       setTextColor(Color.WHITE)
 
                       textSize = 17f
@@ -519,19 +531,24 @@ jobs:
 
                           output.text =
                               if (question.isEmpty()) {
+
                                   "اكتب سؤالك أولاً."
+
                               } else {
+
                                   "تم استلام الطلب.\n\n" +
-                                  "السؤال:\n$question\n\n" +
-                                  "نسخة البناء الحالية جاهزة " +
-                                  "للربط مع OpenAI Responses API."
+                                      "السؤال:\n" +
+                                      question +
+                                      "\n\n" +
+                                      "نسخة البناء الحالية " +
+                                      "جاهزة للربط مع " +
+                                      "OpenAI Responses API."
                               }
                       }
                   }
 
                   output = TextView(this).apply {
                       text = "ستظهر الإجابة هنا."
-
                       textSize = 17f
 
                       setTextColor(Color.WHITE)
@@ -608,7 +625,7 @@ jobs:
           EOF
 
           # ==========================================================
-          # Unit smoke test
+          # Unit test
           # ==========================================================
           cat > app/src/test/java/com/abuaziza/ai/SmokeTest.kt <<'EOF'
           package com.abuaziza.ai
@@ -631,7 +648,7 @@ jobs:
           echo "Android project prepared successfully."
 
       # ============================================================
-      # 8. Validate project and security
+      # 9. Validate project and security
       # ============================================================
       - name: Validate project and security
         shell: bash
@@ -640,15 +657,16 @@ jobs:
 
           test -f settings.gradle.kts
           test -f build.gradle.kts
+          test -f gradle.properties
           test -f app/build.gradle.kts
+          test -f app/proguard-rules.pro
           test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/java/com/abuaziza/ai/MainActivity.kt
           test -f app/src/test/java/com/abuaziza/ai/SmokeTest.kt
 
           # --------------------------------------------------------
-          # Search source/project files only.
-          # Workflow YAML is excluded so explanatory comments cannot
-          # trigger a false positive.
+          # Android 37 is not used by the project.
+          # Workflow YAML is excluded to prevent comment false positives.
           # --------------------------------------------------------
 
           if grep -R \
@@ -713,61 +731,54 @@ jobs:
           echo "Project validation passed."
 
       # ============================================================
-      # 9. Generate Gradle Wrapper
+      # 10. Validate Gradle project
       # ============================================================
-      - name: Generate Gradle Wrapper
+      - name: Validate Gradle project
         shell: bash
         run: |
           set -euo pipefail
 
-          gradle --version
-
-          gradle wrapper \
-            --gradle-version "${GRADLE_VERSION}" \
-            --distribution-type bin
-
-          chmod +x gradlew
-
-          test -f gradlew
-          test -f gradle/wrapper/gradle-wrapper.properties
-
-          ./gradlew --version
+          gradle \
+            tasks \
+            --no-daemon \
+            --stacktrace \
+            --info
 
       # ============================================================
-      # 10. Unit tests
+      # 11. Unit tests
       # ============================================================
       - name: Unit tests
         shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew \
+          gradle \
             test \
             --no-daemon \
             --stacktrace
 
       # ============================================================
-      # 11. Android Lint
+      # 12. Android Lint
       # ============================================================
       - name: Android Lint
         shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew \
+          gradle \
             lint \
             --no-daemon \
             --stacktrace
 
       # ============================================================
-      # 12. Build release APK
+      # 13. Build unsigned release APK
       # ============================================================
       - name: Build release APK
         shell: bash
         run: |
           set -euo pipefail
 
-          ./gradlew \
+          gradle \
             :app:assembleRelease \
             --no-daemon \
             --stacktrace
@@ -775,10 +786,19 @@ jobs:
           APK_DIR="app/build/outputs/apk/release"
 
           if [ -f "${APK_DIR}/app-release-unsigned.apk" ]; then
-            APK="${APK_DIR}/app-release-unsigned.apk"
+
+            echo "Unsigned APK detected:"
+            ls -lh \
+              "${APK_DIR}/app-release-unsigned.apk"
+
           elif [ -f "${APK_DIR}/app-release.apk" ]; then
-            APK="${APK_DIR}/app-release.apk"
+
+            echo "Release APK detected:"
+            ls -lh \
+              "${APK_DIR}/app-release.apk"
+
           else
+
             echo "::error::Release APK was not generated."
 
             find app/build/outputs \
@@ -787,13 +807,11 @@ jobs:
               -print || true
 
             exit 1
+
           fi
 
-          echo "Generated APK:"
-          ls -lh "$APK"
-
       # ============================================================
-      # 13. Generate temporary CI signing key
+      # 14. Generate CI signing key
       # ============================================================
       - name: Generate CI signing key
         shell: bash
@@ -822,7 +840,7 @@ jobs:
           echo "Temporary CI signing key generated."
 
       # ============================================================
-      # 14. Zipalign and sign APK
+      # 15. Zipalign and sign APK
       # ============================================================
       - name: Sign release APK
         shell: bash
@@ -851,23 +869,24 @@ jobs:
               "$UNSIGNED" \
               "$ALIGNED"
 
-          elif [ -f "$SIGNED" ]; then
-
-            cp "$SIGNED" "$ALIGNED"
-
           else
 
-            echo "::error::No release APK found for signing."
+            echo "::error::Unsigned APK not found."
             exit 1
 
           fi
 
           "$APKSIGNER" sign \
-            --ks "${GITHUB_WORKSPACE}/.ci/abuaziza-release.jks" \
-            --ks-pass pass:abuaziza-ci-store \
-            --key-pass pass:abuaziza-ci-key \
-            --ks-key-alias abuaziza \
-            --out "$SIGNED" \
+            --ks \
+            "${GITHUB_WORKSPACE}/.ci/abuaziza-release.jks" \
+            --ks-pass \
+            pass:abuaziza-ci-store \
+            --key-pass \
+            pass:abuaziza-ci-key \
+            --ks-key-alias \
+            abuaziza \
+            --out \
+            "$SIGNED" \
             "$ALIGNED"
 
           test -f "$SIGNED"
@@ -876,7 +895,7 @@ jobs:
           ls -lh "$SIGNED"
 
       # ============================================================
-      # 15. Verify APK
+      # 16. Verify APK
       # ============================================================
       - name: Verify APK
         shell: bash
@@ -901,7 +920,7 @@ jobs:
           echo "APK verification passed."
 
       # ============================================================
-      # 16. Prepare final APK artifact
+      # 17. Prepare final artifact
       # ============================================================
       - name: Prepare APK artifact
         shell: bash
@@ -928,7 +947,7 @@ jobs:
           cat release/SHA256SUMS.txt
 
       # ============================================================
-      # 17. Upload APK artifact
+      # 18. Upload APK artifact
       # ============================================================
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -941,7 +960,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # 18. Publish GitHub Release
+      # 19. Publish GitHub Release
       # ============================================================
       - name: Publish GitHub Release
         if: success() && github.ref == 'refs/heads/main'
@@ -965,13 +984,15 @@ jobs:
             gh release create "$TAG" \
               "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
               "release/SHA256SUMS.txt" \
-              --title "Abuaziza AI v${APP_VERSION_NAME}" \
-              --notes "Production Android APK build."
+              --title \
+              "Abuaziza AI v${APP_VERSION_NAME}" \
+              --notes \
+              "Production Android APK build."
 
           fi
 
       # ============================================================
-      # 19. Final summary
+      # 20. Final summary
       # ============================================================
       - name: Build summary
         if: always()
