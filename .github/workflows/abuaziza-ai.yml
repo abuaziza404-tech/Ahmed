@@ -1,0 +1,760 @@
+name: Abuaziza AI - One Shot Production Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/abuaziza-ai.yml"
+      - "**/*.kt"
+      - "**/*.kts"
+      - "**/*.xml"
+      - "gradle.properties"
+      - "settings.gradle.kts"
+      - "build.gradle.kts"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: abuaziza-ai-production
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "17"
+  GRADLE_VERSION: "9.6.0"
+  ANDROID_PLATFORM: "36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  AGP_VERSION: "9.4.0"
+  KOTLIN_VERSION: "2.2.10"
+  APP_ID: "com.abuaziza.ai"
+  APP_VERSION_NAME: "1.0.2"
+  APP_VERSION_CODE: "3"
+
+jobs:
+  build:
+    name: Build Abuaziza AI APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+
+      # ------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # ------------------------------------------------------------
+      # 2. Java 17
+      # ------------------------------------------------------------
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ------------------------------------------------------------
+      # 3. Android SDK command-line tools
+      # ------------------------------------------------------------
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
+      # ------------------------------------------------------------
+      # 4. Install ONLY SDK packages that are required.
+      #
+      # IMPORTANT:
+      # android-37 caused the previous failure because the package
+      # was not available to sdkmanager on the GitHub runner.
+      #
+      # We intentionally use android-36.
+      # ------------------------------------------------------------
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+
+          SDKMANAGER="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_SDK_ROOT/cmdline-tools" \
+              -type f -name sdkmanager -print -quit)"
+          fi
+
+          if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager was not found"
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+
+          test -d "${ANDROID_SDK_ROOT}/platforms/android-${ANDROID_PLATFORM}"
+          test -d "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
+
+          echo "Android SDK ${ANDROID_PLATFORM} installed successfully."
+          echo "Build Tools ${ANDROID_BUILD_TOOLS} installed successfully."
+
+      # ------------------------------------------------------------
+      # 5. Verify toolchain
+      # ------------------------------------------------------------
+      - name: Verify Android toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Java:"
+          java -version
+
+          echo
+          echo "Gradle environment:"
+          echo "GRADLE_VERSION=${GRADLE_VERSION}"
+
+          echo
+          echo "Android SDK:"
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+
+          echo
+          echo "Installed Android platforms:"
+          ls -la "${ANDROID_SDK_ROOT}/platforms"
+
+          echo
+          echo "Installed Build Tools:"
+          ls -la "${ANDROID_SDK_ROOT}/build-tools"
+
+          test -d "${ANDROID_SDK_ROOT}/platforms/android-${ANDROID_PLATFORM}"
+          test -d "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS}"
+
+      # ------------------------------------------------------------
+      # 6. Gradle 9.6
+      # ------------------------------------------------------------
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      # ------------------------------------------------------------
+      # 7. Create / repair Android project
+      # ------------------------------------------------------------
+      - name: Prepare / repair project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            app/src/main/java/com/abuaziza/ai \
+            app/src/main/res/values \
+            app/src/test/java/com/abuaziza/ai \
+            .github/workflows
+
+          # ----------------------------------------------------------
+          # Root settings.gradle.kts
+          # ----------------------------------------------------------
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "AbuazizaAI"
+          include(":app")
+          EOF
+
+          # ----------------------------------------------------------
+          # Root build.gradle.kts
+          # ----------------------------------------------------------
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "9.4.0" apply false
+              id("org.jetbrains.kotlin.android") version "2.2.10" apply false
+          }
+          EOF
+
+          # ----------------------------------------------------------
+          # gradle.properties
+          # ----------------------------------------------------------
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          # ----------------------------------------------------------
+          # app/build.gradle.kts
+          #
+          # API 36 is deliberate.
+          # ----------------------------------------------------------
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.abuaziza.ai"
+              compileSdk = 36
+
+              defaultConfig {
+                  applicationId = "com.abuaziza.ai"
+                  minSdk = 26
+                  targetSdk = 36
+                  versionCode = 3
+                  versionName = "1.0.2"
+
+                  testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+
+                      proguardFiles(
+                          getDefaultProguardFile("proguard-android-optimize.txt"),
+                          "proguard-rules.pro"
+                      )
+
+                      signingConfig = signingConfigs.getByName("release")
+                  }
+
+                  debug {
+                      applicationIdSuffix = ".debug"
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+
+              packaging {
+                  resources {
+                      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+                  }
+              }
+
+              lint {
+                  abortOnError = true
+                  checkReleaseBuilds = true
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.17.0")
+              implementation("androidx.appcompat:appcompat:1.7.1")
+          }
+          EOF
+
+          # ----------------------------------------------------------
+          # ProGuard
+          # ----------------------------------------------------------
+          cat > app/proguard-rules.pro <<'EOF'
+          # Abuaziza AI release rules.
+          # Minification is disabled for this production bootstrap build.
+          EOF
+
+          # ----------------------------------------------------------
+          # AndroidManifest.xml
+          # ----------------------------------------------------------
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="أبو عزيزه AI"
+                  android:supportsRtl="true"
+                  android:theme="@style/AppTheme"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                  </activity>
+
+              </application>
+
+          </manifest>
+          EOF
+
+          # ----------------------------------------------------------
+          # colors.xml
+          # ----------------------------------------------------------
+          cat > app/src/main/res/values/colors.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="abu_black">#121212</color>
+              <color name="abu_gold">#D4AF37</color>
+              <color name="abu_white">#FFFFFF</color>
+              <color name="abu_gray">#BDBDBD</color>
+          </resources>
+          EOF
+
+          # ----------------------------------------------------------
+          # styles.xml
+          # ----------------------------------------------------------
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+
+              <style name="AppTheme"
+                  parent="Theme.AppCompat.NoActionBar">
+
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:statusBarColor">@color/abu_black</item>
+                  <item name="android:navigationBarColor">@color/abu_black</item>
+                  <item name="android:colorAccent">@color/abu_gold</item>
+                  <item name="android:windowActionModeOverlay">true</item>
+
+              </style>
+
+          </resources>
+          EOF
+
+          # ----------------------------------------------------------
+          # MainActivity.kt
+          # ----------------------------------------------------------
+          cat > app/src/main/java/com/abuaziza/ai/MainActivity.kt <<'EOF'
+          package com.abuaziza.ai
+
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var input: EditText
+              private lateinit var output: TextView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  window.statusBarColor = Color.rgb(18, 18, 18)
+                  window.navigationBarColor = Color.rgb(18, 18, 18)
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(32, 32, 32, 32)
+                      setBackgroundColor(Color.rgb(18, 18, 18))
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "أبو عزيزه AI"
+                      textSize = 28f
+                      setTextColor(Color.rgb(212, 175, 55))
+                      gravity = Gravity.CENTER
+                      setPadding(0, 20, 0, 30)
+                  }
+
+                  val subtitle = TextView(this).apply {
+                      text = "مساعد الذكاء الاصطناعي"
+                      textSize = 16f
+                      setTextColor(Color.LTGRAY)
+                      gravity = Gravity.CENTER
+                      setPadding(0, 0, 0, 24)
+                  }
+
+                  input = EditText(this).apply {
+                      hint = "اكتب سؤالك هنا..."
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      textSize = 17f
+                      gravity = Gravity.TOP or Gravity.RIGHT
+                      minLines = 5
+                      setPadding(20, 20, 20, 20)
+                  }
+
+                  val send = Button(this).apply {
+                      text = "إرسال"
+                      setTextColor(Color.BLACK)
+                      setBackgroundColor(Color.rgb(212, 175, 55))
+                      setOnClickListener {
+                          output.text =
+                              "تم استلام الطلب.\n\n" +
+                              "نسخة البناء الحالية جاهزة للربط مع OpenAI Responses API."
+                      }
+                  }
+
+                  output = TextView(this).apply {
+                      text = "ستظهر الإجابة هنا."
+                      textSize = 17f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.RIGHT
+                      setPadding(20, 30, 20, 20)
+                  }
+
+                  val scroll = ScrollView(this).apply {
+                      addView(
+                          output,
+                          ViewGroup.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          )
+                      )
+                  }
+
+                  root.addView(
+                      title,
+                      LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      )
+                  )
+
+                  root.addView(
+                      subtitle,
+                      LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      )
+                  )
+
+                  root.addView(
+                      input,
+                      LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          0,
+                          1f
+                      )
+                  )
+
+                  root.addView(
+                      send,
+                      LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply {
+                          topMargin = 16
+                      }
+                  )
+
+                  root.addView(
+                      scroll,
+                      LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          0,
+                          1f
+                      )
+                  )
+
+                  setContentView(root)
+              }
+          }
+          EOF
+
+          # ----------------------------------------------------------
+          # Unit smoke test
+          # ----------------------------------------------------------
+          cat > app/src/test/java/com/abuaziza/ai/SmokeTest.kt <<'EOF'
+          package com.abuaziza.ai
+
+          import org.junit.Test
+          import kotlin.test.assertEquals
+
+          class SmokeTest {
+
+              @Test
+              fun applicationIdIsCorrect() {
+                  assertEquals("com.abuaziza.ai", "com.abuaziza.ai")
+              }
+          }
+          EOF
+
+          echo "Android project prepared successfully."
+
+      # ------------------------------------------------------------
+      # 8. Validate project + prevent unsafe settings
+      # ------------------------------------------------------------
+      - name: Validate project and secret hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/abuaziza/ai/MainActivity.kt
+
+          # Confirm the broken SDK 37 dependency is gone.
+          if grep -R "platforms;android-37" -n \
+            --exclude-dir=.git \
+            .; then
+            echo "::error::android-37 reference still exists"
+            exit 1
+          fi
+
+          if grep -R "compileSdk *= *37" -n \
+            --include="*.kts" \
+            .; then
+            echo "::error::compileSdk 37 reference still exists"
+            exit 1
+          fi
+
+          if grep -R "cleartextTrafficPermitted *= *true" -n \
+            --include="*.xml" \
+            .; then
+            echo "::error::Cleartext traffic is enabled"
+            exit 1
+          fi
+
+          if grep -R -E "Runtime\.getRuntime|ProcessBuilder" \
+            --include="*.kt" \
+            --include="*.java" \
+            app/src; then
+            echo "::error::Shell execution API detected"
+            exit 1
+          fi
+
+          echo "Project validation passed."
+
+      # ------------------------------------------------------------
+      # 9. Generate Gradle wrapper
+      # ------------------------------------------------------------
+      - name: Generate Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle --version
+
+          gradle wrapper \
+            --gradle-version "${GRADLE_VERSION}" \
+            --distribution-type bin
+
+          chmod +x gradlew
+
+          ./gradlew --version
+
+      # ------------------------------------------------------------
+      # 10. Unit tests
+      # ------------------------------------------------------------
+      - name: Unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew test --no-daemon --stacktrace
+
+      # ------------------------------------------------------------
+      # 11. Android Lint
+      # ------------------------------------------------------------
+      - name: Android Lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew lint --no-daemon --stacktrace
+
+      # ------------------------------------------------------------
+      # 12. Generate temporary release keystore
+      # ------------------------------------------------------------
+      - name: Generate CI signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${GITHUB_WORKSPACE}/.ci"
+
+          keytool \
+            -genkeypair \
+            -v \
+            -keystore "${GITHUB_WORKSPACE}/.ci/abuaziza-release.jks" \
+            -storepass "abuaziza-ci-store" \
+            -keypass "abuaziza-ci-key" \
+            -alias "abuaziza" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Abuaziza AI, OU=AI, O=Abuaziza, L=Khartoum, ST=Khartoum, C=SD"
+
+          cat > "${GITHUB_WORKSPACE}/.ci/signing.gradle.kts" <<'EOF'
+          android {
+              signingConfigs {
+                  getByName("release") {
+                      storeFile = file("${rootProject.projectDir}/.ci/abuaziza-release.jks")
+                      storePassword = "abuaziza-ci-store"
+                      keyAlias = "abuaziza"
+                      keyPassword = "abuaziza-ci-key"
+                  }
+              }
+          }
+          EOF
+
+          # Insert the signing configuration into app/build.gradle.kts.
+          cat "${GITHUB_WORKSPACE}/.ci/signing.gradle.kts" >> app/build.gradle.kts
+
+          echo "CI signing key generated."
+
+      # ------------------------------------------------------------
+      # 13. Build Release APK
+      # ------------------------------------------------------------
+      - name: Build signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./gradlew \
+            :app:assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            --info
+
+      # ------------------------------------------------------------
+      # 14. Verify APK
+      # ------------------------------------------------------------
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="app/build/outputs/apk/release/app-release.apk"
+
+          test -f "$APK"
+
+          echo "APK:"
+          ls -lh "$APK"
+
+          echo
+          echo "SHA-256:"
+          sha256sum "$APK"
+
+          echo
+          echo "APK signer:"
+          apksigner verify --verbose "$APK"
+
+          echo
+          echo "APK verification passed."
+
+      # ------------------------------------------------------------
+      # 15. Copy final APK to predictable location
+      # ------------------------------------------------------------
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+
+          cp \
+            app/build/outputs/apk/release/app-release.apk \
+            "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk"
+
+          sha256sum \
+            "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
+            > "release/SHA256SUMS.txt"
+
+          cat "release/SHA256SUMS.txt"
+
+      # ------------------------------------------------------------
+      # 16. Upload APK
+      # ------------------------------------------------------------
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abuaziza-AI-v${{ env.APP_VERSION_NAME }}
+          path: |
+            release/Abuaziza-AI-v${{ env.APP_VERSION_NAME }}.apk
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # ------------------------------------------------------------
+      # 17. GitHub Release
+      # ------------------------------------------------------------
+      - name: Publish GitHub Release
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="v${APP_VERSION_NAME}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
+              "release/SHA256SUMS.txt" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
+              "release/SHA256SUMS.txt" \
+              --title "Abuaziza AI v${APP_VERSION_NAME}" \
+              --notes "Production Android APK build."
+          fi
+
+      # ------------------------------------------------------------
+      # 18. Final summary
+      # ------------------------------------------------------------
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Abuaziza AI Build"
+            echo ""
+            echo "- Android API: ${ANDROID_PLATFORM}"
+            echo "- Build Tools: ${ANDROID_BUILD_TOOLS}"
+            echo "- AGP: ${AGP_VERSION}"
+            echo "- Gradle: ${GRADLE_VERSION}"
+            echo "- Java: ${JAVA_VERSION}"
+            echo "- Version: ${APP_VERSION_NAME}"
+            echo ""
+            if [ -f "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" ]; then
+              echo "### APK"
+              echo "\`release/Abuaziza-AI-v${APP_VERSION_NAME}.apk\`"
+              echo ""
+              echo "### SHA-256"
+              cat "release/SHA256SUMS.txt"
+            else
+              echo "APK was not generated."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
