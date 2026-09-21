@@ -1,4 +1,4 @@
-name: Abuaziza AI - Production Android APK
+name: Build Abuaziza AI APK
 
 on:
   workflow_dispatch:
@@ -9,106 +9,88 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: abuaziza-ai-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
-  JAVA_VERSION: "17"
-  GRADLE_VERSION: "9.6.0"
-  ANDROID_PLATFORM: "36"
-  ANDROID_BUILD_TOOLS: "36.0.0"
+  APP_ID: com.abuaziza.ai
+  APP_NAME: Abuaziza AI
+  APP_VERSION: "1.0.4"
+  APP_VERSION_CODE: "4"
+
   AGP_VERSION: "9.4.0"
-  APP_ID: "com.abuaziza.ai"
-  APP_VERSION_NAME: "1.0.4"
-  APP_VERSION_CODE: "5"
+  GRADLE_VERSION: "9.6.0"
+  JDK_VERSION: "17"
+  ANDROID_API: "36"
+  BUILD_TOOLS: "36.0.0"
+
+  CI_KEYSTORE_PASSWORD: "AbuazizaCI2026"
+  CI_KEY_PASSWORD: "AbuazizaCI2026"
+  CI_KEY_ALIAS: "abuaziza-ci"
 
 jobs:
   build:
-    name: Build Abuaziza AI APK
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    name: Build signed Abuaziza AI APK
+    runs-on: ubuntu-latest
 
     steps:
-
-      # =========================================================
-      # CHECKOUT
-      # =========================================================
-
+      # ---------------------------------------------------------
+      # 1) Checkout
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
-      # =========================================================
-      # JAVA 17
-      # =========================================================
-
+      # ---------------------------------------------------------
+      # 2) Java 17
+      # ---------------------------------------------------------
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-
-      # =========================================================
-      # ANDROID SDK
-      # =========================================================
-
+      # ---------------------------------------------------------
+      # 3) Android SDK
+      # ---------------------------------------------------------
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
 
-
-      - name: Install Android SDK components
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
+
+          sdkmanager --sdk_root="${ANDROID_HOME}" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;${BUILD_TOOLS}"
 
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-${ANDROID_PLATFORM}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}"
+          echo "Android SDK configured."
+          sdkmanager --list_installed | grep -E \
+            "platform-tools|platforms;android-${ANDROID_API}|build-tools;${BUILD_TOOLS}" || true
 
-          test -d "${ANDROID_HOME}/platforms/android-${ANDROID_PLATFORM}"
-          test -d "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}"
-
-
-      # =========================================================
-      # CREATE CLEAN ANDROID PROJECT
-      # =========================================================
-
-      - name: Prepare Android project
+      # ---------------------------------------------------------
+      # 4) Generate a completely clean Android project
+      # ---------------------------------------------------------
+      - name: Generate clean Android project
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf app gradle .ci release
-
+          rm -rf app
+          rm -rf gradle
           rm -f \
             build.gradle.kts \
             settings.gradle.kts \
             gradle.properties \
+            local.properties \
             gradlew \
             gradlew.bat
 
-          mkdir -p \
-            app/src/main/java/com/abuaziza/ai \
-            app/src/main/res/values \
-            app/src/test/java/com/abuaziza/ai \
-            .ci \
-            release
+          mkdir -p app/src/main/java/com/abuaziza/ai
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/drawable
 
-
-          # =====================================================
-          # SETTINGS
-          # =====================================================
-
-          cat > settings.gradle.kts <<'KOTLIN'
+          cat > settings.gradle.kts <<'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -118,10 +100,7 @@ jobs:
           }
 
           dependencyResolutionManagement {
-              repositoriesMode.set(
-                  org.gradle.api.initialization.resolve.RepositoriesMode.FAIL_ON_PROJECT_REPOS
-              )
-
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
               repositories {
                   google()
                   mavenCentral()
@@ -129,43 +108,23 @@ jobs:
           }
 
           rootProject.name = "AbuazizaAI"
-
           include(":app")
-          KOTLIN
+          EOF
 
-
-          # =====================================================
-          # ROOT BUILD
-          # =====================================================
-
-          cat > build.gradle.kts <<'KOTLIN'
+          cat > build.gradle.kts <<'EOF'
           plugins {
               id("com.android.application") version "9.4.0" apply false
           }
-          KOTLIN
+          EOF
 
-
-          # =====================================================
-          # GRADLE PROPERTIES
-          # =====================================================
-
-          cat > gradle.properties <<'PROPS'
-          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
-          org.gradle.daemon=false
-          org.gradle.parallel=true
-          org.gradle.caching=false
-
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           android.nonTransitiveRClass=true
           android.builtInKotlin=true
-          PROPS
+          EOF
 
-
-          # =====================================================
-          # APP BUILD
-          # =====================================================
-
-          cat > app/build.gradle.kts <<'KOTLIN'
+          cat > app/build.gradle.kts <<'EOF'
           plugins {
               id("com.android.application")
           }
@@ -176,119 +135,83 @@ jobs:
 
               defaultConfig {
                   applicationId = "com.abuaziza.ai"
-                  minSdk = 26
+                  minSdk = 23
                   targetSdk = 36
-                  versionCode = 5
+
+                  versionCode = 4
                   versionName = "1.0.4"
               }
 
               signingConfigs {
                   create("ciRelease") {
-                      storeFile = rootProject.file(
-                          ".ci/abuaziza-release.jks"
+                      storeFile = file(
+                          System.getenv("CI_KEYSTORE_FILE")
+                              ?: rootProject.file("ci-release.jks")
                       )
 
                       storePassword =
-                          System.getenv("CI_STORE_PASSWORD") ?: ""
+                          System.getenv("CI_KEYSTORE_PASSWORD")
+                              ?: "AbuazizaCI2026"
 
                       keyAlias =
-                          System.getenv("CI_KEY_ALIAS") ?: "abuaziza"
+                          System.getenv("CI_KEY_ALIAS")
+                              ?: "abuaziza-ci"
 
                       keyPassword =
-                          System.getenv("CI_KEY_PASSWORD") ?: ""
+                          System.getenv("CI_KEY_PASSWORD")
+                              ?: "AbuazizaCI2026"
                   }
               }
 
               buildTypes {
+                  getByName("debug") {
+                      applicationIdSuffix = ".debug"
+                  }
 
                   getByName("release") {
                       isMinifyEnabled = false
                       isShrinkResources = false
-
-                      signingConfig =
-                          signingConfigs.getByName("ciRelease")
-                  }
-
-                  getByName("debug") {
-                      applicationIdSuffix = ".debug"
+                      signingConfig = signingConfigs.getByName("ciRelease")
                   }
               }
 
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
+              packaging {
+                  resources {
+                      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+                  }
               }
 
               lint {
                   abortOnError = true
                   checkReleaseBuilds = true
               }
-
-              packaging {
-                  resources {
-                      excludes +=
-                          "/META-INF/{AL2.0,LGPL2.1}"
-                  }
-              }
           }
 
           dependencies {
-              implementation(
-                  "androidx.core:core-ktx:1.17.0"
-              )
-
-              implementation(
-                  "androidx.appcompat:appcompat:1.7.1"
-              )
-
-              testImplementation(
-                  "junit:junit:4.13.2"
-              )
+              implementation("androidx.core:core-ktx:1.17.0")
+              implementation("androidx.appcompat:appcompat:1.7.1")
           }
-          KOTLIN
+          EOF
 
-
-          # =====================================================
-          # PROGUARD
-          # =====================================================
-
-          cat > app/proguard-rules.pro <<'PROGUARD'
-          # Abuaziza AI release rules.
-          PROGUARD
-
-
-          # =====================================================
-          # MANIFEST
-          # =====================================================
-
-          cat > app/src/main/AndroidManifest.xml <<'XML'
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-          <manifest
-              xmlns:android="http://schemas.android.com/apk/res/android">
-
-              <uses-permission
-                  android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.INTERNET" />
 
               <application
-                  android:allowBackup="false"
+                  android:allowBackup="true"
                   android:label="أبوعزيزة AI"
                   android:supportsRtl="true"
-                  android:theme="@style/AppTheme"
-                  android:usesCleartextTraffic="false">
+                  android:theme="@style/Theme.Abuaziza">
 
                   <activity
                       android:name=".MainActivity"
                       android:exported="true">
 
                       <intent-filter>
-
-                          <action
-                              android:name="android.intent.action.MAIN" />
-
-                          <category
-                              android:name="android.intent.category.LAUNCHER" />
-
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
 
                   </activity>
@@ -296,90 +219,92 @@ jobs:
               </application>
 
           </manifest>
-          XML
+          EOF
 
-
-          # =====================================================
-          # COLORS
-          # =====================================================
-
-          cat > app/src/main/res/values/colors.xml <<'XML'
+          cat > app/src/main/res/values/strings.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-
           <resources>
-
-              <color name="abu_black">
-                  #121212
-              </color>
-
-              <color name="abu_gold">
-                  #D4AF37
-              </color>
-
-              <color name="abu_white">
-                  #FFFFFF
-              </color>
-
-              <color name="abu_gray">
-                  #B9B9B9
-              </color>
-
+              <string name="app_name">أبوعزيزة AI</string>
           </resources>
-          XML
+          EOF
 
-
-          # =====================================================
-          # STYLE
-          # =====================================================
-
-          cat > app/src/main/res/values/styles.xml <<'XML'
+          cat > app/src/main/res/values/colors.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="abuaziza_bg">#121212</color>
+              <color name="abuaziza_surface">#1B1B1B</color>
+              <color name="abuaziza_gold">#D4AF37</color>
+              <color name="abuaziza_text">#FFFFFF</color>
+              <color name="abuaziza_muted">#B8B8B8</color>
+              <color name="abuaziza_input">#202020</color>
+          </resources>
+          EOF
 
+          cat > app/src/main/res/values/themes.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
           <resources>
 
               <style
-                  name="AppTheme"
-                  parent="Theme.AppCompat.NoActionBar">
+                  name="Theme.Abuaziza"
+                  parent="Theme.AppCompat.DayNight.NoActionBar">
 
-                  <item name="android:fontFamily">
-                      sans
-                  </item>
-
-                  <item name="android:windowLightStatusBar">
-                      false
-                  </item>
-
-                  <item name="android:statusBarColor">
-                      @color/abu_black
-                  </item>
-
-                  <item name="android:navigationBarColor">
-                      @color/abu_black
-                  </item>
-
-                  <item name="android:colorAccent">
-                      @color/abu_gold
-                  </item>
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:statusBarColor">@color/abuaziza_bg</item>
+                  <item name="android:navigationBarColor">@color/abuaziza_bg</item>
+                  <item name="android:windowActionModeOverlay">true</item>
 
               </style>
 
           </resources>
-          XML
+          EOF
 
+          cat > app/src/main/res/drawable/bg_input.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="@color/abuaziza_input" />
+              <corners android:radius="28dp" />
+              <stroke
+                  android:width="1dp"
+                  android:color="@color/abuaziza_gold" />
+              <padding
+                  android:left="16dp"
+                  android:top="8dp"
+                  android:right="16dp"
+                  android:bottom="8dp" />
+          </shape>
+          EOF
 
-          # =====================================================
-          # MAIN ACTIVITY
-          # =====================================================
+          cat > app/src/main/res/drawable/bg_card.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="@color/abuaziza_surface" />
+              <corners android:radius="22dp" />
+          </shape>
+          EOF
 
-          cat > app/src/main/java/com/abuaziza/ai/MainActivity.kt <<'KOTLIN'
+          cat > app/src/main/res/drawable/bg_gold_button.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android">
+              <solid android:color="@color/abuaziza_gold" />
+              <corners android:radius="22dp" />
+          </shape>
+          EOF
+
+      # ---------------------------------------------------------
+      # 5) Generate functional Arabic UI
+      # ---------------------------------------------------------
+      - name: Generate Abuaziza AI interface
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > app/src/main/java/com/abuaziza/ai/MainActivity.kt <<'EOF'
           package com.abuaziza.ai
 
           import android.graphics.Color
-          import android.graphics.drawable.GradientDrawable
           import android.os.Bundle
-          import android.text.InputType
           import android.view.Gravity
-          import android.view.View
           import android.view.ViewGroup
           import android.widget.Button
           import android.widget.EditText
@@ -387,251 +312,145 @@ jobs:
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
-          import android.widget.Toast
           import androidx.appcompat.app.AppCompatActivity
 
           class MainActivity : AppCompatActivity() {
 
-              private lateinit var messages: LinearLayout
-              private lateinit var chatScroll: ScrollView
+              private lateinit var messagesContainer: LinearLayout
               private lateinit var input: EditText
 
-              private val black =
-                  Color.rgb(18, 18, 18)
+              private fun dp(value: Int): Int {
+                  return (value * resources.displayMetrics.density).toInt()
+              }
 
-              private val surface =
-                  Color.rgb(27, 27, 27)
+              private fun addMessage(
+                  text: String,
+                  fromUser: Boolean = false
+              ) {
+                  val box = TextView(this).apply {
+                      this.text = text
+                      this.textSize = 16f
+                      this.setTextColor(
+                          Color.WHITE
+                      )
+                      this.setPadding(
+                          dp(16),
+                          dp(12),
+                          dp(16),
+                          dp(12)
+                      )
+                      this.textDirection =
+                          if (fromUser) {
+                              TextView.TEXT_DIRECTION_ANY_RTL
+                          } else {
+                              TextView.TEXT_DIRECTION_ANY_RTL
+                          }
+                      this.background = getDrawable(
+                          if (fromUser) {
+                              R.drawable.bg_gold_button
+                          } else {
+                              R.drawable.bg_card
+                          }
+                      )
 
-              private val surface2 =
-                  Color.rgb(38, 38, 38)
+                      if (fromUser) {
+                          setTextColor(Color.BLACK)
+                      }
 
-              private val gold =
-                  Color.rgb(212, 175, 55)
+                      layoutParams =
+                          LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply {
+                              setMargins(
+                                  dp(8),
+                                  dp(6),
+                                  dp(8),
+                                  dp(6)
+                              )
+                          }
+                  }
 
-              private val white =
-                  Color.WHITE
+                  messagesContainer.addView(box)
 
-              private val gray =
-                  Color.rgb(185, 185, 185)
+                  val scroll =
+                      messagesContainer.parent.parent as ScrollView
 
+                  scroll.post {
+                      scroll.fullScroll(ScrollView.FOCUS_DOWN)
+                  }
+              }
+
+              private fun generateLocalReply(
+                  prompt: String
+              ): String {
+                  val p = prompt.trim()
+
+                  if (p.isEmpty()) {
+                      return "اكتب طلبك أولاً."
+                  }
+
+                  return when {
+                      p.contains("قصيدة") ||
+                      p.contains("شعر") ->
+                          "أستطيع مساعدتك في صياغة قصيدة نبطية، ضبط القافية، وتحليل الوزن."
+
+                      p.contains("كود") ||
+                      p.contains("برمج") ->
+                          "أرسل الكود أو الخطأ وسأحلله معك خطوة بخطوة."
+
+                      p.contains("فكرة") ||
+                      p.contains("مشروع") ->
+                          "أرسل المجال والهدف، وسأحوّل الفكرة إلى خطة تنفيذ واضحة."
+
+                      p.contains("حلل") ||
+                      p.contains("تحليل") ->
+                          "تم استلام طلب التحليل. أرسل النص أو البيانات كاملة لأعطيك تحليلاً منظماً."
+
+                      else ->
+                          "تم استلام طلبك: $p\n\nهذه نسخة محلية تجريبية من الواجهة. ربط نموذج ذكاء اصطناعي فعلي يحتاج إلى Backend/API آمن."
+                  }
+              }
 
               override fun onCreate(
                   savedInstanceState: Bundle?
               ) {
                   super.onCreate(savedInstanceState)
 
-                  window.statusBarColor = black
-                  window.navigationBarColor = black
-
-                  buildUi()
-              }
-
-
-              private fun buildUi() {
-
-                  val root =
-                      LinearLayout(this).apply {
-
-                          orientation =
-                              LinearLayout.VERTICAL
-
-                          setBackgroundColor(black)
-
-                          layoutDirection =
-                              View.LAYOUT_DIRECTION_RTL
-                      }
-
-
-                  root.addView(
-                      createHeader(),
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          dp(78)
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(
+                          Color.rgb(18, 18, 18)
                       )
-                  )
+                      layoutDirection =
+                          LinearLayout.LAYOUT_DIRECTION_RTL
+                  }
 
-
-                  chatScroll =
-                      ScrollView(this).apply {
-
-                          isFillViewport = true
-
-                          setBackgroundColor(black)
-                      }
-
-
-                  messages =
-                      LinearLayout(this).apply {
-
-                          orientation =
-                              LinearLayout.VERTICAL
-
-                          setPadding(
-                              dp(18),
-                              dp(18),
-                              dp(18),
-                              dp(18)
-                          )
-
-                          layoutDirection =
-                              View.LAYOUT_DIRECTION_RTL
-                      }
-
-
-                  chatScroll.addView(
-                      messages,
-
-                      ScrollView.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
+                  val header = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(
+                          dp(16),
+                          dp(14),
+                          dp(16),
+                          dp(14)
                       )
-                  )
-
-
-                  root.addView(
-                      chatScroll,
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          0,
-                          1f
+                      setBackgroundColor(
+                          Color.rgb(25, 25, 25)
                       )
-                  )
+                  }
 
-
-                  showWelcome()
-
-
-                  root.addView(
-                      createQuickActions(),
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          dp(58)
+                  val title = TextView(this).apply {
+                      text = "أبوعزيزة AI"
+                      textSize = 22f
+                      setTextColor(
+                          Color.rgb(212, 175, 55)
                       )
-                  )
-
-
-                  root.addView(
-                      createInputBar(),
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
-                      )
-                  )
-
-
-                  setContentView(root)
-              }
-
-
-              private fun createHeader():
-                  LinearLayout {
-
-                  val header =
-                      LinearLayout(this).apply {
-
-                          orientation =
-                              LinearLayout.HORIZONTAL
-
-                          gravity =
-                              Gravity.CENTER_VERTICAL
-
-                          setPadding(
-                              dp(18),
-                              dp(10),
-                              dp(18),
-                              dp(10)
-                          )
-
-                          setBackgroundColor(surface)
-
-                          layoutDirection =
-                              View.LAYOUT_DIRECTION_RTL
-                      }
-
-
-                  val logo =
-                      TextView(this).apply {
-
-                          text = "أ"
-
-                          textSize = 22f
-
-                          gravity = Gravity.CENTER
-
-                          setTextColor(black)
-
-                          background =
-                              roundedBackground(
-                                  gold,
-                                  22
-                              )
-                      }
-
+                      gravity = Gravity.CENTER
+                  }
 
                   header.addView(
-                      logo,
-
-                      LinearLayout.LayoutParams(
-                          dp(50),
-                          dp(50)
-                      ).apply {
-
-                          leftMargin = dp(8)
-
-                          rightMargin = dp(8)
-                      }
-                  )
-
-
-                  val titleBox =
-                      LinearLayout(this).apply {
-
-                          orientation =
-                              LinearLayout.VERTICAL
-
-                          gravity =
-                              Gravity.CENTER_VERTICAL
-                      }
-
-
-                  val title =
-                      TextView(this).apply {
-
-                          text = "أبوعزيزة AI"
-
-                          textSize = 20f
-
-                          setTextColor(white)
-
-                          gravity = Gravity.RIGHT
-                      }
-
-
-                  val status =
-                      TextView(this).apply {
-
-                          text = "مساعدك الذكي"
-
-                          textSize = 12f
-
-                          setTextColor(gray)
-
-                          gravity = Gravity.RIGHT
-                      }
-
-
-                  titleBox.addView(title)
-
-                  titleBox.addView(status)
-
-
-                  header.addView(
-                      titleBox,
-
+                      title,
                       LinearLayout.LayoutParams(
                           0,
                           ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -639,828 +458,368 @@ jobs:
                       )
                   )
 
-
-                  val newButton =
-                      Button(this).apply {
-
-                          text = "جديد"
-
-                          textSize = 13f
-
-                          setTextColor(gold)
-
-                          isAllCaps = false
-
-                          background =
-                              roundedBackground(
-                                  surface2,
-                                  18
-                              )
-
-
-                          setOnClickListener {
-
-                              messages.removeAllViews()
-
-                              showWelcome()
-
-                              input.setText("")
-
-
-                              Toast.makeText(
-                                  this@MainActivity,
-                                  "بدأت محادثة جديدة",
-                                  Toast.LENGTH_SHORT
-                              ).show()
-                          }
+                  val newChat = Button(this).apply {
+                      text = "محادثة جديدة"
+                      setOnClickListener {
+                          messagesContainer.removeAllViews()
+                          addMessage(
+                              "مرحباً بك في أبوعزيزة AI.\nكيف أساعدك اليوم؟"
+                          )
                       }
-
+                  }
 
                   header.addView(
-                      newButton,
-
+                      newChat,
                       LinearLayout.LayoutParams(
-                          dp(74),
-                          dp(50)
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
                       )
                   )
 
-
-                  return header
-              }
-
-
-              private fun createQuickActions():
-                  HorizontalScrollView {
-
-                  val scroll =
-                      HorizontalScrollView(this).apply {
-
-                          isHorizontalScrollBarEnabled =
-                              false
-
-                          layoutDirection =
-                              View.LAYOUT_DIRECTION_RTL
-
-                          setBackgroundColor(black)
-                      }
-
-
-                  val row =
-                      LinearLayout(this).apply {
-
-                          orientation =
-                              LinearLayout.HORIZONTAL
-
-                          gravity =
-                              Gravity.CENTER_VERTICAL
-
-                          setPadding(
-                              dp(12),
-                              dp(5),
-                              dp(12),
-                              dp(5)
-                          )
-
-                          layoutDirection =
-                              View.LAYOUT_DIRECTION_RTL
-                      }
-
-
-                  addQuickButton(
-                      row,
-                      "اكتب لي",
-                      "اكتب لي نصًا احترافيًا عن "
-                  )
-
-
-                  addQuickButton(
-                      row,
-                      "حلّل",
-                      "حلّل هذا النص: "
-                  )
-
-
-                  addQuickButton(
-                      row,
-                      "قصيدة",
-                      "ساعدني في كتابة قصيدة عن "
-                  )
-
-
-                  addQuickButton(
-                      row,
-                      "كود",
-                      "اكتب لي كودًا لحل "
-                  )
-
-
-                  addQuickButton(
-                      row,
-                      "أفكار",
-                      "أعطني أفكار مشاريع في "
-                  )
-
-
-                  scroll.addView(row)
-
-                  return scroll
-              }
-
-
-              private fun addQuickButton(
-                  row: LinearLayout,
-                  label: String,
-                  prompt: String
-              ) {
-
-                  val button =
-                      Button(this).apply {
-
-                          text = label
-
-                          textSize = 12f
-
-                          setTextColor(gold)
-
-                          isAllCaps = false
-
-                          background =
-                              roundedBackground(
-                                  surface2,
-                                  20
-                              )
-
-
-                          setOnClickListener {
-
-                              input.setText(prompt)
-
-                              input.setSelection(
-                                  input.text.length
-                              )
-
-                              input.requestFocus()
-                          }
-                      }
-
-
-                  row.addView(
-                      button,
-
+                  root.addView(
+                      header,
                       LinearLayout.LayoutParams(
-                          dp(92),
-                          dp(44)
-                      ).apply {
-
-                          leftMargin = dp(5)
-
-                          rightMargin = dp(5)
-                      }
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      )
                   )
-              }
 
+                  val scroll = ScrollView(this).apply {
+                      isFillViewport = true
+                  }
 
-              private fun createInputBar():
-                  LinearLayout {
+                  messagesContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(
+                          dp(8),
+                          dp(12),
+                          dp(8),
+                          dp(12)
+                      )
+                  }
 
-                  val area =
-                      LinearLayout(this).apply {
+                  scroll.addView(
+                      messagesContainer,
+                      ViewGroup.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      )
+                  )
 
-                          orientation =
-                              LinearLayout.HORIZONTAL
-
-                          gravity =
-                              Gravity.CENTER_VERTICAL
-
-                          setPadding(
-                              dp(12),
-                              dp(10),
-                              dp(12),
-                              dp(14)
-                          )
-
-                          setBackgroundColor(surface)
-
-                          layoutDirection =
-                              View.LAYOUT_DIRECTION_RTL
-                      }
-
-
-                  input =
-                      EditText(this).apply {
-
-                          hint =
-                              "اكتب رسالتك هنا..."
-
-                          setHintTextColor(
-                              Color.rgb(
-                                  125,
-                                  125,
-                                  125
-                              )
-                          )
-
-                          setTextColor(white)
-
-                          textSize = 16f
-
-                          gravity =
-                              Gravity.RIGHT or
-                              Gravity.CENTER_VERTICAL
-
-                          inputType =
-                              InputType.TYPE_CLASS_TEXT or
-                              InputType.TYPE_TEXT_FLAG_MULTI_LINE
-
-                          maxLines = 4
-
-                          minLines = 1
-
-                          setPadding(
-                              dp(18),
-                              dp(8),
-                              dp(18),
-                              dp(8)
-                          )
-
-                          background =
-                              roundedBackground(
-                                  surface2,
-                                  28
-                              )
-                      }
-
-
-                  area.addView(
-                      input,
-
+                  root.addView(
+                      scroll,
                       LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
                           0,
-                          dp(56),
                           1f
                       )
                   )
 
+                  val quickScroll =
+                      HorizontalScrollView(this).apply {
+                          isHorizontalScrollBarEnabled = false
+                      }
 
-                  val send =
-                      Button(this).apply {
+                  val quickBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(
+                          dp(8),
+                          dp(4),
+                          dp(8),
+                          dp(4)
+                      )
+                  }
 
-                          text = "إرسال"
+                  val quickActions = listOf(
+                      "اكتب لي",
+                      "حلّل",
+                      "قصيدة",
+                      "كود",
+                      "أفكار"
+                  )
 
-                          textSize = 13f
-
-                          setTextColor(black)
-
-                          isAllCaps = false
-
-                          background =
-                              roundedBackground(
-                                  gold,
-                                  28
-                              )
-
-
+                  quickActions.forEach { label ->
+                      val button = Button(this).apply {
+                          text = label
                           setOnClickListener {
-                              sendMessage()
+                              input.setText(label)
+                              input.requestFocus()
                           }
                       }
 
+                      quickBar.addView(
+                          button,
+                          LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply {
+                              setMargins(
+                                  dp(4),
+                                  dp(2),
+                                  dp(4),
+                                  dp(2)
+                              )
+                          }
+                      )
+                  }
 
-                  area.addView(
+                  quickScroll.addView(quickBar)
+
+                  root.addView(
+                      quickScroll,
+                      LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      )
+                  )
+
+                  val composer =
+                      LinearLayout(this).apply {
+                          orientation =
+                              LinearLayout.HORIZONTAL
+                          gravity =
+                              Gravity.CENTER_VERTICAL
+                          setPadding(
+                              dp(8),
+                              dp(8),
+                              dp(8),
+                              dp(12)
+                          )
+                      }
+
+                  input = EditText(this).apply {
+                      hint = "اكتب رسالتك..."
+                      hintTextColor =
+                          Color.rgb(150, 150, 150)
+                      setTextColor(Color.WHITE)
+                      textSize = 16f
+                      gravity =
+                          Gravity.CENTER_VERTICAL or
+                          Gravity.RIGHT
+                      background =
+                          getDrawable(
+                              R.drawable.bg_input
+                          )
+                      setSingleLine(false)
+                      maxLines = 4
+                  }
+
+                  composer.addView(
+                      input,
+                      LinearLayout.LayoutParams(
+                          0,
+                          dp(58),
+                          1f
+                      ).apply {
+                          setMargins(
+                              0,
+                              0,
+                              dp(8),
+                              0
+                          )
+                      }
+                  )
+
+                  val send = Button(this).apply {
+                      text = "إرسال"
+                      setOnClickListener {
+                          val prompt =
+                              input.text.toString()
+
+                          if (prompt.trim().isNotEmpty()) {
+                              addMessage(
+                                  prompt,
+                                  true
+                              )
+
+                              input.setText("")
+
+                              addMessage(
+                                  generateLocalReply(
+                                      prompt
+                                  )
+                              )
+                          }
+                      }
+                  }
+
+                  composer.addView(
                       send,
-
                       LinearLayout.LayoutParams(
-                          dp(82),
-                          dp(56)
-                      ).apply {
-
-                          leftMargin = dp(8)
-                      }
+                          dp(90),
+                          dp(58)
+                      )
                   )
 
-
-                  return area
-              }
-
-
-              private fun showWelcome() {
-
-                  addCenteredText(
-                      "مرحبًا بك في أبوعزيزة AI",
-                      28f,
-                      gold,
-                      12
-                  )
-
-
-                  addCenteredText(
-                      "مساحة عمل عربية للكتابة والتحليل والأفكار والبرمجة",
-                      15f,
-                      gray,
-                      22
-                  )
-
-
-                  val status =
-                      TextView(this).apply {
-
-                          text =
-                              "● النظام المحلي جاهز"
-
-                          textSize = 13f
-
-                          setTextColor(gold)
-
-                          gravity = Gravity.CENTER
-
-                          setPadding(
-                              dp(16),
-                              dp(10),
-                              dp(16),
-                              dp(10)
-                          )
-
-                          background =
-                              roundedBackground(
-                                  Color.rgb(
-                                      42,
-                                      36,
-                                      18
-                                  ),
-                                  22
-                              )
-                      }
-
-
-                  messages.addView(
-                      status,
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
-                      ).apply {
-
-                          topMargin = dp(8)
-
-                          bottomMargin = dp(22)
-                      }
-                  )
-
-
-                  addSectionTitle(
-                      "ابدأ بسرعة"
-                  )
-              }
-
-
-              private fun addSectionTitle(
-                  text: String
-              ) {
-
-                  val title =
-                      TextView(this).apply {
-
-                          this.text = text
-
-                          textSize = 15f
-
-                          setTextColor(white)
-
-                          gravity = Gravity.RIGHT
-
-                          setPadding(
-                              0,
-                              dp(6),
-                              0,
-                              dp(8)
-                          )
-                      }
-
-
-                  messages.addView(
-                      title,
-
+                  root.addView(
+                      composer,
                       LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT,
                           ViewGroup.LayoutParams.WRAP_CONTENT
                       )
                   )
-              }
 
-
-              private fun addCenteredText(
-                  text: String,
-                  size: Float,
-                  color: Int,
-                  bottomDp: Int
-              ) {
-
-                  val view =
-                      TextView(this).apply {
-
-                          this.text = text
-
-                          textSize = size
-
-                          setTextColor(color)
-
-                          gravity = Gravity.CENTER
-
-                          setPadding(
-                              dp(8),
-                              dp(6),
-                              dp(8),
-                              dp(bottomDp)
-                          )
-                      }
-
-
-                  messages.addView(
-                      view,
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
-                      )
-                  )
-              }
-
-
-              private fun sendMessage() {
-
-                  val text =
-                      input.text.toString().trim()
-
-
-                  if (text.isEmpty()) {
-
-                      Toast.makeText(
-                          this,
-                          "اكتب رسالتك أولاً",
-                          Toast.LENGTH_SHORT
-                      ).show()
-
-                      return
-                  }
-
-
-                  messages.removeAllViews()
-
+                  setContentView(root)
 
                   addMessage(
-                      text,
-                      true
+                      "مرحباً بك في أبوعزيزة AI.\nكيف أساعدك اليوم؟"
                   )
-
-
-                  input.setText("")
-
-
-                  addMessage(
-                      generateLocalResponse(text),
-                      false
-                  )
-
-
-                  scrollToBottom()
-              }
-
-
-              private fun addMessage(
-                  text: String,
-                  user: Boolean
-              ) {
-
-                  val card =
-                      TextView(this).apply {
-
-                          this.text = text
-
-                          textSize = 15.5f
-
-                          setTextColor(white)
-
-                          gravity = Gravity.RIGHT
-
-                          setLineSpacing(
-                              0f,
-                              1.15f
-                          )
-
-                          setPadding(
-                              dp(18),
-                              dp(14),
-                              dp(18),
-                              dp(14)
-                          )
-
-
-                          background =
-                              roundedBackground(
-
-                                  if (user) {
-                                      Color.rgb(
-                                          67,
-                                          56,
-                                          20
-                                      )
-                                  } else {
-                                      surface
-                                  },
-
-                                  20
-                              )
-                      }
-
-
-                  messages.addView(
-                      card,
-
-                      LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
-                      ).apply {
-
-                          topMargin = dp(6)
-
-                          bottomMargin = dp(6)
-                      }
-                  )
-              }
-
-
-              private fun generateLocalResponse(
-                  text: String
-              ): String {
-
-                  val value =
-                      text.trim().lowercase()
-
-
-                  return when {
-
-                      value.contains("قصيدة") ||
-                          value.contains("شعر") -> {
-
-                          "ممتاز. اذكر الفكرة، القافية، والجو الذي تريده، وسأساعدك في بناء النص الشعري."
-                      }
-
-
-                      value.contains("حلل") ||
-                          value.contains("تحليل") -> {
-
-                          "أرسل النص أو الموضوع كاملًا، وسأرتبه إلى: الفكرة، الأدلة، الأنماط، الاحتمالات، والنقاط التي تحتاج تحققًا."
-                      }
-
-
-                      value.contains("كود") ||
-                          value.contains("برمج") -> {
-
-                          "أرسل وصف التطبيق أو المشكلة البرمجية، وسأحوّلها إلى بنية ملفات وكود وخطوات بناء قابلة للاختبار."
-                      }
-
-
-                      value.contains("فكرة") ||
-                          value.contains("مشروع") -> {
-
-                          "أرسل المجال والهدف، وسأحوّل الفكرة إلى منتج أولي ومتطلبات تقنية وخطة تنفيذ."
-                      }
-
-
-                      else -> {
-
-                          "تم استلام طلبك بنجاح.\n\n" +
-                          "هذه النسخة تعمل محليًا داخل الهاتف، " +
-                          "والواجهة أصبحت جاهزة لربطها بمحرك ذكاء اصطناعي حقيقي عبر Backend آمن."
-                      }
-                  }
-              }
-
-
-              private fun scrollToBottom() {
-
-                  chatScroll.post {
-
-                      chatScroll.fullScroll(
-                          ScrollView.FOCUS_DOWN
-                      )
-                  }
-              }
-
-
-              private fun roundedBackground(
-                  color: Int,
-                  radiusDp: Int
-              ): GradientDrawable {
-
-                  return GradientDrawable().apply {
-
-                      setColor(color)
-
-                      cornerRadius =
-                          dp(radiusDp).toFloat()
-                  }
-              }
-
-
-              private fun dp(
-                  value: Int
-              ): Int {
-
-                  return (
-                      value *
-                      resources.displayMetrics.density
-                  ).toInt()
               }
           }
-          KOTLIN
+          EOF
 
-
-          # =====================================================
-          # TEST
-          # =====================================================
-
-          cat > app/src/test/java/com/abuaziza/ai/BasicTest.kt <<'KOTLIN'
-          package com.abuaziza.ai
-
-          import org.junit.Assert.assertTrue
-          import org.junit.Test
-
-          class BasicTest {
-
-              @Test
-              fun buildSanityTest() {
-                  assertTrue(true)
-              }
-          }
-          KOTLIN
-
-
-      # =========================================================
-      # VALIDATION
-      # =========================================================
-
-      - name: Validate project files
+      # ---------------------------------------------------------
+      # 6) Validate project structure
+      # ---------------------------------------------------------
+      - name: Validate generated project
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
-          test -f gradle.properties
-          test -f app/build.gradle.kts
-          test -f app/proguard-rules.pro
-          test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/java/com/abuaziza/ai/MainActivity.kt
-          test -f app/src/test/java/com/abuaziza/ai/BasicTest.kt
+          test -s settings.gradle.kts
+          test -s build.gradle.kts
+          test -s gradle.properties
+          test -s app/build.gradle.kts
+          test -s app/src/main/AndroidManifest.xml
+          test -s app/src/main/java/com/abuaziza/ai/MainActivity.kt
 
-          if grep -E \
-            'org\.jetbrains\.kotlin\.android|kotlin-android' \
-            build.gradle.kts \
-            app/build.gradle.kts \
-            gradle.properties \
-            2>/dev/null; then
+          if grep -R 'org.jetbrains.kotlin.android' -n . \
+            --exclude-dir=.git \
+            --exclude='*.md'; then
+            echo "ERROR: Legacy Kotlin Android plugin detected."
+            exit 1
+          fi
 
-            echo "::error::Legacy Kotlin Android plugin detected."
-
+          if grep -R 'kotlinOptions\|JvmTarget\|kotlin {' -n app \
+            --exclude='*.md'; then
+            echo "ERROR: Legacy Kotlin configuration detected."
             exit 1
           fi
 
           echo "Project validation passed."
 
-
-      # =========================================================
-      # CI SIGNING KEY
-      # =========================================================
-
+      # ---------------------------------------------------------
+      # 7) Temporary CI signing key
+      # ---------------------------------------------------------
       - name: Generate CI signing key
         shell: bash
         env:
-          CI_STORE_PASSWORD: abuaziza_ci_store
-          CI_KEY_PASSWORD: abuaziza_ci_key
-          CI_KEY_ALIAS: abuaziza
+          CI_KEYSTORE_FILE: ${{ runner.temp }}/abuaziza-ci-release.jks
+          CI_KEYSTORE_PASSWORD: ${{ env.CI_KEYSTORE_PASSWORD }}
+          CI_KEY_ALIAS: ${{ env.CI_KEY_ALIAS }}
+          CI_KEY_PASSWORD: ${{ env.CI_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          rm -f .ci/abuaziza-release.jks
-
-          keytool \
-            -genkeypair \
+          keytool -genkeypair \
             -v \
-            -keystore ".ci/abuaziza-release.jks" \
-            -storetype JKS \
-            -storepass "${CI_STORE_PASSWORD}" \
-            -keypass "${CI_KEY_PASSWORD}" \
-            -alias "${CI_KEY_ALIAS}" \
+            -keystore "$CI_KEYSTORE_FILE" \
+            -storepass "$CI_KEYSTORE_PASSWORD" \
+            -keypass "$CI_KEY_PASSWORD" \
+            -alias "$CI_KEY_ALIAS" \
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -dname \
-            "CN=Abuaziza AI, OU=AI, O=Abuaziza, L=Khartoum, ST=Khartoum, C=SD"
+            -dname "CN=Abuaziza AI, OU=CI, O=Abuaziza, C=SD"
 
-          test -s .ci/abuaziza-release.jks
+          test -s "$CI_KEYSTORE_FILE"
 
+          echo "CI signing key generated."
 
-      # =========================================================
-      # GRADLE
-      # =========================================================
-
-      - name: Set up Gradle 9.6
-        uses: gradle/actions/setup-gradle@v6
+      # ---------------------------------------------------------
+      # 8) Install Gradle 9.6
+      # ---------------------------------------------------------
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
           cache-disabled: true
 
-
-      - name: Generate Gradle Wrapper
+      # ---------------------------------------------------------
+      # 9) Generate Gradle wrapper
+      # ---------------------------------------------------------
+      - name: Generate Gradle wrapper
         shell: bash
         run: |
           set -euo pipefail
 
           gradle wrapper \
             --gradle-version "${GRADLE_VERSION}" \
-            --distribution-type bin \
-            --no-daemon \
-            --stacktrace
+            --distribution-type bin
 
           chmod +x gradlew
 
-          test -f gradlew
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
-
-
-      # =========================================================
-      # VERIFY GRADLE
-      # =========================================================
-
-      - name: Verify Gradle project
-        shell: bash
-        run: |
-          set -euo pipefail
-
           ./gradlew --version
 
-          ./gradlew help \
-            --no-daemon \
-            --stacktrace
-
-          ./gradlew :app:tasks \
-            --no-daemon \
-            --stacktrace
-
-
-      # =========================================================
-      # TEST
-      # =========================================================
-
-      - name: Run unit tests
+      # ---------------------------------------------------------
+      # 10) Smoke test = compile Debug APK
+      # ---------------------------------------------------------
+      - name: Compile debug APK - smoke test
         shell: bash
+        env:
+          CI_KEYSTORE_FILE: ${{ runner.temp }}/abuaziza-ci-release.jks
+          CI_KEYSTORE_PASSWORD: ${{ env.CI_KEYSTORE_PASSWORD }}
+          CI_KEY_ALIAS: ${{ env.CI_KEY_ALIAS }}
+          CI_KEY_PASSWORD: ${{ env.CI_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          ./gradlew :app:testDebugUnitTest \
+          ./gradlew :app:assembleDebug \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --warning-mode all
 
+          test -s \
+            "app/build/outputs/apk/debug/app-debug.apk"
 
-      # =========================================================
-      # LINT
-      # =========================================================
+          echo "Debug APK compilation passed."
 
+      # ---------------------------------------------------------
+      # 11) Android Lint
+      # ---------------------------------------------------------
       - name: Run Android lint
         shell: bash
+        env:
+          CI_KEYSTORE_FILE: ${{ runner.temp }}/abuaziza-ci-release.jks
+          CI_KEYSTORE_PASSWORD: ${{ env.CI_KEYSTORE_PASSWORD }}
+          CI_KEY_ALIAS: ${{ env.CI_KEY_ALIAS }}
+          CI_KEY_PASSWORD: ${{ env.CI_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           ./gradlew :app:lint \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --warning-mode all
 
+          echo "Android lint passed."
 
-      # =========================================================
-      # BUILD RELEASE APK
-      # =========================================================
-
+      # ---------------------------------------------------------
+      # 12) Build signed Release APK
+      # ---------------------------------------------------------
       - name: Build signed release APK
         shell: bash
         env:
-          CI_STORE_PASSWORD: abuaziza_ci_store
-          CI_KEY_PASSWORD: abuaziza_ci_key
-          CI_KEY_ALIAS: abuaziza
+          CI_KEYSTORE_FILE: ${{ runner.temp }}/abuaziza-ci-release.jks
+          CI_KEYSTORE_PASSWORD: ${{ env.CI_KEYSTORE_PASSWORD }}
+          CI_KEY_ALIAS: ${{ env.CI_KEY_ALIAS }}
+          CI_KEY_PASSWORD: ${{ env.CI_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           ./gradlew :app:assembleRelease \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --warning-mode all
 
+          test -s \
+            "app/build/outputs/apk/release/app-release.apk"
 
-      # =========================================================
-      # VERIFY APK
-      # =========================================================
+          echo "Release APK built successfully."
 
+      # ---------------------------------------------------------
+      # 13) Verify APK
+      # ---------------------------------------------------------
       - name: Verify and package APK
         shell: bash
         run: |
@@ -1468,89 +827,26 @@ jobs:
 
           APK="app/build/outputs/apk/release/app-release.apk"
 
-          FINAL="release/Abuaziza-AI-v${APP_VERSION_NAME}.apk"
-
-          test -s "$APK"
-
-          "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner" \
-            verify \
+          "$ANDROID_HOME/build-tools/${BUILD_TOOLS}/apksigner" verify \
             --verbose \
             "$APK"
 
-          cp "$APK" "$FINAL"
+          mkdir -p release
 
-          sha256sum "$FINAL" \
-            > release/SHA256SUMS.txt
+          cp "$APK" \
+            "release/abuaziza-ai-v${APP_VERSION}.apk"
 
-          test -s "$FINAL"
+          sha256sum \
+            "release/abuaziza-ai-v${APP_VERSION}.apk" \
+            | tee "release/abuaziza-ai-v${APP_VERSION}.sha256"
 
-          test -s release/SHA256SUMS.txt
+          ls -lh release/
 
-          ls -lh "$FINAL"
+          echo "APK verification passed."
 
-          cat release/SHA256SUMS.txt
-
-
-      # =========================================================
-      # ARTIFACT
-      # =========================================================
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Abuaziza-AI-v${{ env.APP_VERSION_NAME }}
-
-          path: |
-            release/Abuaziza-AI-v${{ env.APP_VERSION_NAME }}.apk
-            release/SHA256SUMS.txt
-
-          if-no-files-found: error
-
-          retention-days: 30
-
-
-      # =========================================================
-      # GITHUB RELEASE
-      # =========================================================
-
-      - name: Publish GitHub Release
-        if: success() && github.ref == 'refs/heads/main'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-        run: |
-          set -euo pipefail
-
-          TAG="v${APP_VERSION_NAME}"
-
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-
-            gh release upload \
-              "$TAG" \
-              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
-              "release/SHA256SUMS.txt" \
-              --clobber
-
-          else
-
-            gh release create \
-              "$TAG" \
-              "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" \
-              "release/SHA256SUMS.txt" \
-              --title \
-              "Abuaziza AI v${APP_VERSION_NAME}" \
-              --notes \
-              "Production Android APK build."
-
-          fi
-
-
-      # =========================================================
-      # SUMMARY
-      # =========================================================
-
+      # ---------------------------------------------------------
+      # 14) Build summary
+      # ---------------------------------------------------------
       - name: Build summary
         if: always()
         shell: bash
@@ -1558,31 +854,69 @@ jobs:
           {
             echo "## Abuaziza AI Build"
             echo
-            echo "- Version: ${APP_VERSION_NAME}"
+            echo "- App: ${APP_NAME}"
+            echo "- Application ID: ${APP_ID}"
+            echo "- Version: ${APP_VERSION}"
             echo "- Version Code: ${APP_VERSION_CODE}"
             echo "- AGP: ${AGP_VERSION}"
             echo "- Gradle: ${GRADLE_VERSION}"
-            echo "- Java: ${JAVA_VERSION}"
-            echo "- Android API: ${ANDROID_PLATFORM}"
-            echo "- Build Tools: ${ANDROID_BUILD_TOOLS}"
+            echo "- JDK: ${JDK_VERSION}"
+            echo "- Android API: ${ANDROID_API}"
+            echo "- Build Tools: ${BUILD_TOOLS}"
             echo
 
-            if [ -f "release/Abuaziza-AI-v${APP_VERSION_NAME}.apk" ]; then
-
-              echo "### APK CREATED"
+            if [ -f "release/abuaziza-ai-v${APP_VERSION}.apk" ]; then
+              echo "### APK"
+              echo
+              echo "Release APK generated successfully."
               echo
 
-              echo "\`release/Abuaziza-AI-v${APP_VERSION_NAME}.apk\`"
-              echo
+              ls -lh \
+                "release/abuaziza-ai-v${APP_VERSION}.apk"
 
+              echo
               echo "### SHA-256"
-
-              cat release/SHA256SUMS.txt
-
+              cat \
+                "release/abuaziza-ai-v${APP_VERSION}.sha256"
             else
-
-              echo "### APK NOT CREATED"
-
+              echo "Release APK was not generated."
             fi
-
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------
+      # 15) Upload artifact
+      # ---------------------------------------------------------
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abuaziza-AI-v${{ env.APP_VERSION }}
+          path: |
+            release/abuaziza-ai-v${{ env.APP_VERSION }}.apk
+            release/abuaziza-ai-v${{ env.APP_VERSION }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---------------------------------------------------------
+      # 16) Create GitHub Release
+      # ---------------------------------------------------------
+      - name: Create GitHub Release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="v${APP_VERSION}-${GITHUB_RUN_NUMBER}"
+          APK="release/abuaziza-ai-v${APP_VERSION}.apk"
+          SHA="release/abuaziza-ai-v${APP_VERSION}.sha256"
+
+          gh release create "$TAG" \
+            "$APK" \
+            "$SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Abuaziza AI ${APP_VERSION}" \
+            --notes "Automated Android release build for Abuaziza AI ${APP_VERSION}." \
+            --target "$GITHUB_SHA"
+
+          echo "GitHub Release created: $TAG"
