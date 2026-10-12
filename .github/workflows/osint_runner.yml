@@ -1,146 +1,143 @@
-name: OSINT Automation Sudan Pro
-
+name: Build Sudan OSINT Android APK
 on:
   workflow_dispatch:
-    inputs:
-      target:
-        description: 'Enter Sudanese Number (+249...), @handle, or TikTok/Facebook URL'
-        required: true
-        default: ''
+
+permissions:
+  contents: read
 
 jobs:
-  investigate:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install Java
+        uses: actions/setup-java@v4
         with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Restore embedded Android project
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
-
-      - name: Run OSINT Engine
-        env:
-          TARGET: ${{ github.event.inputs.target }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CALLER_ID_TOKEN: ${{ secrets.CALLER_ID_TOKEN }}
-          CALLER_ID_API_URL: ${{ secrets.CALLER_ID_API_URL }}
-        run: |
-          python -c '
-          import os, re, json, html, sys
-          from urllib.parse import urlparse, urlunparse, quote
-          import requests
-
-          TARGET = os.getenv("TARGET", "").strip()
-          KEY = os.getenv("OPENAI_API_KEY", "").strip()
-          TOKEN = os.getenv("CALLER_ID_TOKEN", "").strip()
-          ENDPOINT = os.getenv("CALLER_ID_API_URL", "").strip()
-
-          CARRIERS = {
-              "90":"Zain", "91":"Zain", "96":"Zain",
-              "11":"Sudani", "12":"Sudani",
-              "92":"MTN / Ariba", "93":"MTN / Ariba", "99":"MTN / Ariba"
-          }
-
-          def classify(text):
-              if not text or len(text) > 250:
-                  raise ValueError("Invalid input length")
-              number = re.sub(r"[\s().-]", "", text)
-              if number.startswith("00249"): number = "+" + number[2:]
-              elif number.startswith("249"): number = "+" + number
-              elif number.startswith("0"): number = "+249" + number[1:]
-              
-              if re.fullmatch(r"\+249\d{8}", number):
-                  return "phone", number
-              if re.fullmatch(r"@[A-Za-z0-9.]{1,30}", text):
-                  return "social", text.lower()
-                  
-              parsed = urlparse(text if "://" in text else "https://" + text)
-              host = (parsed.hostname or "").lower()
-              hosts = {"tiktok.com", "://tiktok.com", "://tiktok.com", "facebook.com", "://facebook.com", "://facebook.com", "fb.watch"}
-              if host in hosts and parsed.path not in ("", "/"):
-                  return "social", urlunparse(("https", host, quote(parsed.path, safe="/@.-"), "", "", ""))
-              raise ValueError("Enter a valid Sudanese number, @handle, or TikTok/Facebook URL")
-
-          def carrier_cell(number):
-              prefix = number[4:6]
-              return {"prefix": prefix, "carrier": CARRIERS.get(prefix, "Unknown"), "country": "Sudan"}
-
-          def caller_cell(number):
-              if not TOKEN or not ENDPOINT:
-                  return {"status": "not configured", "name": None}
-              try:
-                  res = requests.get(ENDPOINT, params={"phone": number}, headers={"Authorization": f"Bearer {TOKEN}"}, timeout=10)
-                  if res.status_code == 200:
-                      return {"status": "success", "name": res.json().get("display_name", "Unknown")}
-              except Exception:
-                  pass
-              return {"status": "unavailable", "name": None}
-
-          def social_cell(target):
-              result = {"platform": "TikTok" if "tiktok" in target else "Facebook", "title": None, "status": "no metadata"}
-              try:
-                  res = requests.get(target, headers={"User-Agent": "Mozilla/5.0 (compatible; PublicMetadataViewer/1.0)"}, timeout=10)
-                  if res.status_code == 200:
-                      title = re.search(r"<meta property=\"og:title\" content=\"([^\"]+)\"", res.text)
-                      if title:
-                          result["title"] = title.group(1)
-                          result["status"] = "public metadata found"
-              except Exception:
-                  pass
-              return result
-
-          def ai_cell(kind, carrier_data, caller_data, social_data):
-              if not KEY:
-                  return "Rule-based analysis: Metadata is self-published. Phone data restricted to network carrier routing rules."
-              try:
-                  payload = {
-                      "model": "gpt-4o-mini",
-                      "messages": [
-                          {"role": "system", "content": "You are an OSINT investigator. Conclude location evidence based on network and metadata strictly."},
-                          {"role": "user", "content": f"Analyze: Type={kind}, Carrier={carrier_data}, Caller={caller_data}, Social={social_data}"}
-                      ],
-                      "temperature": 0.2
-                  }
-                  res = requests.post("https://openai.com", json=payload, headers={"Authorization": f"Bearer {KEY}"}, timeout=10)
-                  if res.status_code == 200:
-                      return res.json()["choices"][0]["message"]["content"]
-              except Exception:
-                  pass
-              return "AI Analysis failed to process. Falling back to local rules."
-
-          try:
-              kind, verified_target = classify(TARGET)
-              report = f"# OSINT Investigation Report\n\n- **Target:** {verified_target}\n- **Type:** {kind.upper()}\n"
-              
-              c_data, id_data, s_data = {}, {}, {}
-              if kind == "phone":
-                  c_data = carrier_cell(verified_target)
-                  id_data = caller_cell(verified_target)
-                  report += f"- **Carrier Network:** {c_data['carrier']}\n- **Prefix:** {c_data['prefix']}\n- **Caller ID Name:** {id_data['name'] or 'Not Found'}\n"
-              else:
-                  s_data = social_cell(verified_target)
-                  report += f"- **Platform:** {s_data['platform']}\n- **Profile Title/Name:** {s_data['title'] or 'Not Found'}\n- **Fetch Status:** {s_data['status']}\n"
-              
-              ai_conclusion = ai_cell(kind, c_data, id_data, s_data)
-              report += f"\n## 🧠 AI Analytical Conclusion\n\n{ai_conclusion}\n"
-              
-              with open("OSINT_REPORT.md", "w", encoding="utf-8") as f:
-                  f.write(report)
-              print("Report generated successfully.")
-          except Exception as e:
-              with open("OSINT_REPORT.md", "w", encoding="utf-8") as f:
-                  f.write(f"# Error\n\n{str(e)}")
-          '
-
-      - name: Upload Investigation Report
+          python3 - <<'PY'
+          import base64, io, zipfile
+          payload = (
+            "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"
+            "X4qdrfj3OJmWzq5ET0me3/OzY0cMNMKH6ryF99GW5PT89nmX4rgDuE/lsPh0/9s6zijzvoG5cj8BpoJx3hOP8DOgiy8gIAuVX7tM"
+            "JThmlyI35pyiUBTlFUK7u0tTh6fmumYqNbJRT6hTjVKNRyGWHhIXKFUxwcUqzevqZcfVKfOqBjBQucVwlmY6aFXzQVXXx9f/YTBJ"
+            "zeYOj/jE0Yad7Md/LwDtW4qbatOMIBRqcXETb3pzpMI9fvHqzcW53fqn5tT2Ab0+Xp3RbwtaT8MpewWfK3NlbAp5e/nuqZK4mbGL"
+            "LOg9Tp7A0lRv+7Qf8+gYHmsAY2IyFimkCCPmPCIzBdV9bLKz5D+yT2hPcp1+d+0Eg0XcothzzawZb6rF+PXm05fv5mEvzTa7riGq"
+            "DLSwoe/RoNPOVXjAfBh6Z3rLpt8uFdso3dJaW5wnNkuq0Y5ApaSyoRRqC6uV6w/8WXfuL1BLAQIUAxQAAAAIAOauTF1wKOCxqgAA"
+            "ABABAAATAAAAAAAAAAAAAACkgQAAAABzZXR0aW5ncy5ncmFkbGUua3RzUEsBAhQDFAAAAAgA5q5MXXAThl50AAAA2QAAABAAAAAA"
+            "AAAAAAAAAKSB2wAAAGJ1aWxkLmdyYWRsZS5rdHNQSwECFAMUAAAACADmrkxdP7LzxmIAAABnAAAAEQAAAAAAAAAAAAAApIF9AQAA"
+            "Z3JhZGxlLnByb3BlcnRpZXNQSwECFAMUAAAACADmrkxdAQR4r/ABAAC6BAAAFAAAAAAAAAAAAAAApIEOAgAAYXBwL2J1aWxkLmdy"
+            "YWRsZS5rdHNQSwECFAMUAAAACADmrkxdemoHS00BAAC/AgAAIAAAAAAAAAAAAAAApIEwBAAAYXBwL3NyYy9tYWluL0FuZHJvaWRN"
+            "YW5pZmVzdC54bWxQSwECFAMUAAAACADmrkxd5eDoF1oTAACWPgAANwAAAAAAAAAAAAAApIG7BQAAYXBwL3NyYy9tYWluL2phdmEv"
+            "b3JnL3N1ZGFub3NpbnQvbW9iaWxlL01haW5BY3Rpdml0eS5rdFBLAQIUAxQAAAAIAOauTF1Qz1tVgQEAACoDAAAfAAAAAAAAAAAA"
+            "AACkgWoZAAAuZ2l0aHViL3dvcmtmbG93cy9idWlsZC1hcGsueW1sUEsFBgAAAAAHAAcAAAIAACgbAAAAAA=="
+          )
+          with zipfile.ZipFile(io.BytesIO(base64.b64decode(payload))) as archive:
+              archive.extractall(".")
+          print("Android project restored")
+          PY
+      - name: Build APK
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: OSINT-Report
-          path: OSINT_REPORT.md
+          name: SudanOSINT-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
