@@ -1,0 +1,146 @@
+name: OSINT Automation Sudan Pro
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Enter Sudanese Number (+249...), @handle, or TikTok/Facebook URL'
+        required: true
+        default: ''
+
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run OSINT Engine
+        env:
+          TARGET: ${{ github.event.inputs.target }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CALLER_ID_TOKEN: ${{ secrets.CALLER_ID_TOKEN }}
+          CALLER_ID_API_URL: ${{ secrets.CALLER_ID_API_URL }}
+        run: |
+          python -c '
+          import os, re, json, html, sys
+          from urllib.parse import urlparse, urlunparse, quote
+          import requests
+
+          TARGET = os.getenv("TARGET", "").strip()
+          KEY = os.getenv("OPENAI_API_KEY", "").strip()
+          TOKEN = os.getenv("CALLER_ID_TOKEN", "").strip()
+          ENDPOINT = os.getenv("CALLER_ID_API_URL", "").strip()
+
+          CARRIERS = {
+              "90":"Zain", "91":"Zain", "96":"Zain",
+              "11":"Sudani", "12":"Sudani",
+              "92":"MTN / Ariba", "93":"MTN / Ariba", "99":"MTN / Ariba"
+          }
+
+          def classify(text):
+              if not text or len(text) > 250:
+                  raise ValueError("Invalid input length")
+              number = re.sub(r"[\s().-]", "", text)
+              if number.startswith("00249"): number = "+" + number[2:]
+              elif number.startswith("249"): number = "+" + number
+              elif number.startswith("0"): number = "+249" + number[1:]
+              
+              if re.fullmatch(r"\+249\d{8}", number):
+                  return "phone", number
+              if re.fullmatch(r"@[A-Za-z0-9.]{1,30}", text):
+                  return "social", text.lower()
+                  
+              parsed = urlparse(text if "://" in text else "https://" + text)
+              host = (parsed.hostname or "").lower()
+              hosts = {"tiktok.com", "://tiktok.com", "://tiktok.com", "facebook.com", "://facebook.com", "://facebook.com", "fb.watch"}
+              if host in hosts and parsed.path not in ("", "/"):
+                  return "social", urlunparse(("https", host, quote(parsed.path, safe="/@.-"), "", "", ""))
+              raise ValueError("Enter a valid Sudanese number, @handle, or TikTok/Facebook URL")
+
+          def carrier_cell(number):
+              prefix = number[4:6]
+              return {"prefix": prefix, "carrier": CARRIERS.get(prefix, "Unknown"), "country": "Sudan"}
+
+          def caller_cell(number):
+              if not TOKEN or not ENDPOINT:
+                  return {"status": "not configured", "name": None}
+              try:
+                  res = requests.get(ENDPOINT, params={"phone": number}, headers={"Authorization": f"Bearer {TOKEN}"}, timeout=10)
+                  if res.status_code == 200:
+                      return {"status": "success", "name": res.json().get("display_name", "Unknown")}
+              except Exception:
+                  pass
+              return {"status": "unavailable", "name": None}
+
+          def social_cell(target):
+              result = {"platform": "TikTok" if "tiktok" in target else "Facebook", "title": None, "status": "no metadata"}
+              try:
+                  res = requests.get(target, headers={"User-Agent": "Mozilla/5.0 (compatible; PublicMetadataViewer/1.0)"}, timeout=10)
+                  if res.status_code == 200:
+                      title = re.search(r"<meta property=\"og:title\" content=\"([^\"]+)\"", res.text)
+                      if title:
+                          result["title"] = title.group(1)
+                          result["status"] = "public metadata found"
+              except Exception:
+                  pass
+              return result
+
+          def ai_cell(kind, carrier_data, caller_data, social_data):
+              if not KEY:
+                  return "Rule-based analysis: Metadata is self-published. Phone data restricted to network carrier routing rules."
+              try:
+                  payload = {
+                      "model": "gpt-4o-mini",
+                      "messages": [
+                          {"role": "system", "content": "You are an OSINT investigator. Conclude location evidence based on network and metadata strictly."},
+                          {"role": "user", "content": f"Analyze: Type={kind}, Carrier={carrier_data}, Caller={caller_data}, Social={social_data}"}
+                      ],
+                      "temperature": 0.2
+                  }
+                  res = requests.post("https://openai.com", json=payload, headers={"Authorization": f"Bearer {KEY}"}, timeout=10)
+                  if res.status_code == 200:
+                      return res.json()["choices"][0]["message"]["content"]
+              except Exception:
+                  pass
+              return "AI Analysis failed to process. Falling back to local rules."
+
+          try:
+              kind, verified_target = classify(TARGET)
+              report = f"# OSINT Investigation Report\n\n- **Target:** {verified_target}\n- **Type:** {kind.upper()}\n"
+              
+              c_data, id_data, s_data = {}, {}, {}
+              if kind == "phone":
+                  c_data = carrier_cell(verified_target)
+                  id_data = caller_cell(verified_target)
+                  report += f"- **Carrier Network:** {c_data['carrier']}\n- **Prefix:** {c_data['prefix']}\n- **Caller ID Name:** {id_data['name'] or 'Not Found'}\n"
+              else:
+                  s_data = social_cell(verified_target)
+                  report += f"- **Platform:** {s_data['platform']}\n- **Profile Title/Name:** {s_data['title'] or 'Not Found'}\n- **Fetch Status:** {s_data['status']}\n"
+              
+              ai_conclusion = ai_cell(kind, c_data, id_data, s_data)
+              report += f"\n## 🧠 AI Analytical Conclusion\n\n{ai_conclusion}\n"
+              
+              with open("OSINT_REPORT.md", "w", encoding="utf-8") as f:
+                  f.write(report)
+              print("Report generated successfully.")
+          except Exception as e:
+              with open("OSINT_REPORT.md", "w", encoding="utf-8") as f:
+                  f.write(f"# Error\n\n{str(e)}")
+          '
+
+      - name: Upload Investigation Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: OSINT-Report
+          path: OSINT_REPORT.md
